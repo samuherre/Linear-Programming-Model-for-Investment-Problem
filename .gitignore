@@ -1,0 +1,35 @@
+# ---- Kiro (configuración local del asistente; no se versiona) ----
+.kiro/
+
+# ---- Entornos virtuales de Python ----
+.venv/
+venv/
+env/
+ENV/
+
+# ---- Caché y artefactos de Python ----
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- Jupyter ----
+.ipynb_checkpoints/
+
+# ---- Solver / PuLP (archivos temporales de CBC) ----
+*.lp
+*.mps
+*.sol
+
+# ---- Sistema operativo / editores ----
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# ---- Variables de entorno sensibles ----
+.env
+.env.*

@@ -1,0 +1,13 @@
+# Dependencias EXTRA de la API REST (FastAPI) del modelo de CDT.
+# Probado con Python 3.13 en Windows/PowerShell.
+#
+# NOTA: pulp, pandas y numpy NO se duplican aquí: ya están en el
+# requirements.txt de la raíz del proyecto (la API reusa los módulos de src/,
+# que dependen de PuLP). Instale primero las deps raíz si aún no lo ha hecho:
+#     pip install -r requirements.txt
+# y luego estas:
+#     pip install -r api/requirements-api.txt
+
+fastapi>=0.110
+uvicorn[standard]>=0.29
+pydantic>=2.6

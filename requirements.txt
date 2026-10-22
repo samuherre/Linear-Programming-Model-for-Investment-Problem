@@ -1,0 +1,11 @@
+# Dependencias del modelo de optimizacion de inversion en CDT
+# Probado con Python 3.12 en Windows/PowerShell
+# Versiones fijadas para garantizar reproducibilidad
+
+PuLP==2.9.0
+numpy==1.26.4
+pandas==2.2.3
+matplotlib==3.9.2
+
+# Lectura de archivos Excel (.xlsx) desde data/ via pandas
+openpyxl==3.1.5
