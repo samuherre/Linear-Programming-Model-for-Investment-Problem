@@ -39,6 +39,48 @@ uvicorn api.app:app --reload --port 8000
 | GET    | `/datos`     | Parámetros del modelo: A, bancos, plazos, tramos, concentración, liquidez y resumen de carga. |
 | GET    | `/productos` | Matriz de combinaciones `(banco, plazo, tramo)` utilizables con su tasa EA, `f_ijk`, mínimo de apertura y si es supuesto. |
 | POST   | `/optimizar` | Resuelve el MILP para un escenario (parámetros opcionales) y devuelve solución + dualidad/sensibilidad. |
+| POST   | `/simular-liquidez` | Barrido de liquidez (escalera de CDT): resuelve varios niveles de exigencia a corto plazo y devuelve la comparativa con el costo de oportunidad. |
+
+### `POST /simular-liquidez` — body (todo opcional)
+
+Resuelve el modelo una vez por cada escenario de liquidez y compara la ganancia
+`Z*` frente al primer escenario (referencia), cuantificando el **costo de
+oportunidad** de mantener capital disponible a corto plazo (≤180 días). Replica
+`examples/simulacion_liquidez.py` vía HTTP.
+
+```jsonc
+{
+  "A": 10000000,                          // capital; por defecto el de config
+  "concentracion_max": 0.40,              // float (a todos) o dict {banco: fracción}
+  "archivo_datos": "escenario_supuesto.csv", // tasas completas por (i,j,k)
+  "escenarios": [                         // opcional; si se omite, barrido por defecto
+    { "etiqueta": "Libre",            "L_corto": null, "U_corto": null },
+    { "etiqueta": "2M a corto (20%)", "L_corto": 0.20, "U_corto": 0.20 },
+    { "etiqueta": "4M a corto (40%)", "L_corto": 0.40, "U_corto": 0.40 }
+  ]
+}
+```
+
+Barrido por defecto (si se omite `escenarios`): Libre, 10%, 20%, 30% y 40% a
+corto plazo. Nota: fijar `L_corto = U_corto` **ancla** un monto exacto en el
+bucket corto; el optimizador elige el banco/plazo corto que más rinde.
+
+Respuesta resumida:
+
+```jsonc
+{
+  "ok": true,
+  "A": 10000000.0,
+  "concentracion_max": { "Bancolombia": 0.40, "...": 0.40 },
+  "archivo_datos": "escenario_supuesto.csv",
+  "referencia": "primer escenario (costo_oportunidad = Z*_ref − Z*_escenario)",
+  "escenarios": [
+    { "etiqueta": "Libre",            "ok": true, "objetivo": 2247861.0, "rendimiento_efectivo_pct": 22.479, "monto_corto": 0,       "monto_largo": 10000000, "num_cdt": 3, "costo_oportunidad": 0 },
+    { "etiqueta": "20% a corto",      "ok": true, "objetivo": 1919256.0, "rendimiento_efectivo_pct": 19.193, "monto_corto": 2000000, "monto_largo": 8000000,  "num_cdt": 3, "costo_oportunidad": 328605.0 }
+  ],
+  "advertencia_lp_restringido": "..."
+}
+```
 
 ### `POST /optimizar` — body (todo opcional)
 

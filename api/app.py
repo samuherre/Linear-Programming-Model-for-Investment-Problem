@@ -207,6 +207,84 @@ class OptimizarRequest(BaseModel):
     }
 
 
+class EscenarioLiquidez(BaseModel):
+    """Un escenario del barrido de liquidez (cota corto plazo, ≤180 días)."""
+
+    etiqueta: Optional[str] = Field(
+        default=None,
+        description="Nombre legible del escenario (p. ej. '2M a corto (20%)').",
+    )
+    L_corto: Optional[float] = Field(
+        default=None,
+        description="Fracción MÍNIMA de A en plazos ≤180 días (0..1) o null = sin cota.",
+    )
+    U_corto: Optional[float] = Field(
+        default=None,
+        description="Fracción MÁXIMA de A en plazos ≤180 días (0..1) o null = sin cota.",
+    )
+
+
+class SimularLiquidezRequest(BaseModel):
+    """Parámetros del barrido de liquidez ("escalera" de CDT).
+
+    Resuelve el MILP una vez por cada escenario de liquidez y compara la
+    ganancia (Z*) frente a un escenario de referencia SIN exigencia de liquidez,
+    cuantificando el costo de oportunidad de mantener capital disponible a corto
+    plazo. Replica el ejemplo `examples/simulacion_liquidez.py` vía HTTP.
+    """
+
+    A: Optional[float] = Field(
+        default=None, gt=0, description="Capital total. Por defecto, el de config."
+    )
+    concentracion_max: Optional[Any] = Field(
+        default=None,
+        description="Concentración máxima por banco: float (aplica a todos) o dict {banco: fracción}.",
+    )
+    archivo_datos: Optional[str] = Field(
+        default=None,
+        description=(
+            "Archivo de datos a usar (dentro de data/). Por defecto el del "
+            "proyecto. Para tasas completas por (i,j,k) use 'escenario_supuesto.csv'."
+        ),
+    )
+    escenarios: Optional[list[EscenarioLiquidez]] = Field(
+        default=None,
+        description=(
+            "Lista de escenarios de liquidez a comparar. Si se omite, se usa un "
+            "barrido por defecto: libre, 10%, 20%, 30% y 40% a corto plazo."
+        ),
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {},
+                {
+                    "A": 10000000,
+                    "concentracion_max": 0.40,
+                    "archivo_datos": "escenario_supuesto.csv",
+                    "escenarios": [
+                        {"etiqueta": "Libre", "L_corto": None, "U_corto": None},
+                        {"etiqueta": "2M a corto (20%)", "L_corto": 0.20, "U_corto": 0.20},
+                        {"etiqueta": "4M a corto (40%)", "L_corto": 0.40, "U_corto": 0.40},
+                    ],
+                },
+            ]
+        }
+    }
+
+
+# Barrido por defecto del endpoint de liquidez: (etiqueta, L_corto, U_corto).
+# Fijar L=U ancla un monto exacto en el bucket corto (≤180 días).
+_BARRIDO_LIQUIDEZ_DEFECTO = [
+    ("Libre (sin exigencia de liquidez)", None, None),
+    ("10% a corto", 0.10, 0.10),
+    ("20% a corto", 0.20, 0.20),
+    ("30% a corto", 0.30, 0.30),
+    ("40% a corto", 0.40, 0.40),
+]
+
+
 # ===========================================================================
 # Aplicación FastAPI + CORS
 # ===========================================================================
@@ -574,5 +652,176 @@ def optimizar(req: OptimizarRequest) -> dict[str, Any]:
         "precios_sombra": precios_sombra,
         "holgura_complementaria": holgura_complementaria,
         "rangos": rangos_serial,
+        "advertencia_lp_restringido": ADVERTENCIA_LP_RESTRINGIDO,
+    }
+
+
+# ===========================================================================
+# Simulación de liquidez (escalera de CDT): barrido corto vs rendimiento
+# ===========================================================================
+def _concentracion_override(base_conc: dict, concentracion_max: Any) -> dict:
+    """Resuelve el override de concentración (float global o dict por banco).
+
+    Reutiliza la misma semántica de `_construir_config_override`: un float
+    aplica a todos los bancos; un dict sobrescribe los bancos indicados.
+    """
+    if concentracion_max is None:
+        return dict(base_conc)
+    if isinstance(concentracion_max, (int, float)):
+        return {banco: float(concentracion_max) for banco in base_conc}
+    if isinstance(concentracion_max, dict):
+        nuevo = dict(base_conc)
+        for banco, valor in concentracion_max.items():
+            if banco not in nuevo:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Banco '{banco}' en concentracion_max no pertenece al "
+                        f"conjunto de bancos: {sorted(nuevo)}."
+                    ),
+                )
+            nuevo[banco] = float(valor)
+        return nuevo
+    raise HTTPException(
+        status_code=400,
+        detail="concentracion_max debe ser un número o un dict {banco: fracción}.",
+    )
+
+
+@app.post(
+    "/simular-liquidez",
+    summary="Barrido de liquidez (escalera de CDT): costo de oportunidad corto vs largo",
+)
+def simular_liquidez(req: SimularLiquidezRequest) -> dict[str, Any]:
+    """Resuelve el MILP para varios niveles de liquidez y los compara.
+
+    Caso de uso ("escalera" de CDT): el inversionista quiere mantener parte del
+    capital disponible a corto plazo (≤180 días) y colocar el resto a plazos
+    largos, que rinden más por periodo. Este endpoint barre varios niveles de
+    exigencia de liquidez a corto (`L_corto`/`U_corto`) y, para cada uno, resuelve
+    el modelo y reporta la ganancia `Z*`, el reparto corto/largo y el **costo de
+    oportunidad** frente al primer escenario (referencia, normalmente "Libre").
+
+    Reusa íntegramente el pipeline de `src/` (mismo modelo que `/optimizar`); solo
+    cambia la cota de liquidez entre escenarios. Si se omiten `escenarios`, usa un
+    barrido por defecto (libre, 10%, 20%, 30%, 40% a corto).
+
+    Respuesta: `A`, `concentracion_max` efectiva, lista `escenarios` (cada uno con
+    etiqueta, cotas, estado, `objetivo`/Z*, rendimiento efectivo %, montos corto y
+    largo, nº de CDT y `costo_oportunidad` vs la referencia) y la advertencia de LP
+    restringido. Si algún escenario no es óptimo, ese elemento trae `ok=false` con
+    su estado; los demás se resuelven igual.
+    """
+    base = config_modulo.get_config()
+
+    # Config común (capital y concentración) para todos los escenarios.
+    A = float(req.A) if req.A is not None else float(base["A"])
+    concentracion = _concentracion_override(base["concentracion_max"], req.concentracion_max)
+    archivo_datos = req.archivo_datos  # None => archivo por defecto del proyecto
+
+    # Escenarios a barrer: los del request o el barrido por defecto.
+    if req.escenarios:
+        escenarios = [
+            (e.etiqueta or f"L={e.L_corto}/U={e.U_corto}", e.L_corto, e.U_corto)
+            for e in req.escenarios
+        ]
+    else:
+        escenarios = list(_BARRIDO_LIQUIDEZ_DEFECTO)
+
+    resultados: list[dict[str, Any]] = []
+    z_referencia: Optional[float] = None  # Z* del primer escenario óptimo.
+
+    for etiqueta, l_corto, u_corto in escenarios:
+        config = {
+            "A": A,
+            "tramos": base["tramos"],
+            "concentracion_max": dict(concentracion),
+            "liquidez": {
+                "L_corto": l_corto,
+                "U_corto": u_corto,
+                "L_largo": None,
+                "U_largo": None,
+            },
+        }
+
+        try:
+            datos = cargar_datos(archivo_datos=archivo_datos, config=config)
+        except DataLoaderError as err:
+            raise HTTPException(status_code=400, detail=str(err))
+
+        if not datos.combinaciones:
+            resultados.append(
+                {
+                    "etiqueta": etiqueta,
+                    "L_corto": l_corto,
+                    "U_corto": u_corto,
+                    "ok": False,
+                    "estado": "SinCombinaciones",
+                    "mensaje": (
+                        "No hay combinaciones utilizables (tasas vacías). Use "
+                        "archivo_datos='escenario_supuesto.csv' o cargue tasas."
+                    ),
+                }
+            )
+            continue
+
+        modelo = construir_modelo(datos)
+        agregar_restricciones_tramos(modelo)
+        agregar_restricciones_riesgo(modelo)
+        resultado = resolver(modelo)
+
+        if not resultado.es_optimo:
+            resultados.append(
+                {
+                    "etiqueta": etiqueta,
+                    "L_corto": l_corto,
+                    "U_corto": u_corto,
+                    "ok": False,
+                    "estado": resultado.estado,
+                    "mensaje": (
+                        "Escenario infactible/no óptimo: la exigencia de liquidez "
+                        "puede ser incompatible con la concentración por banco."
+                    ),
+                }
+            )
+            continue
+
+        # Reparto corto (≤180) vs largo (>180) y nº de CDT activos.
+        corto = sum(v for c, v in resultado.x.items() if c[1] <= 180)
+        largo = sum(v for c, v in resultado.x.items() if c[1] > 180)
+        rend_efectivo = (resultado.objetivo / A * 100.0) if (resultado.objetivo and A) else None
+
+        # El primer escenario óptimo fija la referencia para el costo de oportunidad.
+        if z_referencia is None and resultado.objetivo is not None:
+            z_referencia = resultado.objetivo
+        costo_oportunidad = (
+            _num_seguro(z_referencia - resultado.objetivo)
+            if (z_referencia is not None and resultado.objetivo is not None)
+            else None
+        )
+
+        resultados.append(
+            {
+                "etiqueta": etiqueta,
+                "L_corto": l_corto,
+                "U_corto": u_corto,
+                "ok": True,
+                "estado": resultado.estado,
+                "objetivo": _num_seguro(resultado.objetivo),
+                "rendimiento_efectivo_pct": _num_seguro(rend_efectivo),
+                "monto_corto": _num_seguro(corto),
+                "monto_largo": _num_seguro(largo),
+                "num_cdt": len(resultado.x),
+                "costo_oportunidad": costo_oportunidad,
+            }
+        )
+
+    return {
+        "ok": True,
+        "A": _num_seguro(A),
+        "concentracion_max": {b: _num_seguro(v) for b, v in concentracion.items()},
+        "archivo_datos": archivo_datos or "(por defecto del proyecto)",
+        "referencia": "primer escenario (costo_oportunidad = Z*_ref − Z*_escenario)",
+        "escenarios": resultados,
         "advertencia_lp_restringido": ADVERTENCIA_LP_RESTRINGIDO,
     }
