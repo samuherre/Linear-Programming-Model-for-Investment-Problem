@@ -3,6 +3,7 @@
 
 # ---- Entornos virtuales de Python ----
 .venv/
+.venv-mac/
 venv/
 env/
 ENV/
