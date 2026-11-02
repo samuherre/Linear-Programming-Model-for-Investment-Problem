@@ -1,5 +1,10 @@
 recurso,simbolo,etiqueta,precio_sombra
-capital,lambda,A,0.243225
-concentracion,mu,Banco de Bogota,-0.0
-concentracion,mu,Bancolombia,0.00111525
-concentracion,mu,Davivienda,0.01162304
+capital,lambda,A,0.1201
+concentracion,mu,Bancolombia,-0.0
+concentracion,mu,Davivienda,-0.0
+concentracion,mu,Lulo Bank,-0.0
+liquidez,sigma,liquidez_hasta_180_inf,-0.066534625
+liquidez,sigma,liquidez_hasta_360_inf,-0.0
+liquidez,sigma,plazo_max_180,-0.0
+liquidez,sigma,plazo_max_360,-0.0
+liquidez,sigma,plazo_max_720,0.13474804

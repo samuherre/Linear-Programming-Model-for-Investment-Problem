@@ -393,35 +393,158 @@ def agregar_restricciones_riesgo(modelo: ModeloCDT) -> ModeloCDT:
             _nombre_var("min_apertura", clave),
         )
 
-    # --- Familia 4: liquidez corto/largo plazo (Req. 3.7) -------------------
-    # Cada cota se activa SOLO si está definida (None = desactivada).
-    liq = datos.liquidez
-    corto = [c for c in datos.combinaciones if c[1] <= 180]
-    largo = [c for c in datos.combinaciones if c[1] > 180]
-    suma_corto = pulp.lpSum(modelo.x[c] for c in corto)
-    suma_largo = pulp.lpSum(modelo.x[c] for c in largo)
+    # --- Familia 4: liquidez por fechas / corto-largo (Req. 3.7 + liquidez
+    #     en fechas intermedias) ------------------------------------------
+    # Se delega en un helper compartido con sensitivity.py para que el MILP y
+    # el LP restringido impongan EXACTAMENTE las mismas restricciones (mismos
+    # nombres), condición necesaria para que la dualidad sea coherente.
+    agregar_restricciones_liquidez(
+        datos,
+        lambda c: modelo.x[c],
+        lambda expr, nombre: modelo.problema.__iadd__((expr, nombre)),
+    )
 
-    # (L_horizonte, U_horizonte, suma, etiqueta) para iterar sin repetir código.
-    for l_clave, u_clave, suma, etiqueta in (
-        ("L_corto", "U_corto", suma_corto, "corto"),
-        ("L_largo", "U_largo", suma_largo, "largo"),
+    # --- Familia 5: concentración máxima por plazo (diversificación) --------
+    # Σ_{i,k} x_ijk ≤ q_j · A para cada plazo j con combinaciones utilizables.
+    # Evita que todo el capital quede en un único plazo (p. ej. todo a 720 d).
+    agregar_restricciones_plazo(
+        datos,
+        lambda c: modelo.x[c],
+        lambda expr, nombre: modelo.problema.__iadd__((expr, nombre)),
+    )
+
+    return modelo
+
+
+# ---------------------------------------------------------------------------
+# Helpers compartidos de liquidez y diversificación por plazo
+# ---------------------------------------------------------------------------
+# Estos helpers encapsulan la LÓGICA de las restricciones de liquidez por fecha
+# y de concentración por plazo, parametrizando CÓMO se obtiene la variable x de
+# una clave y CÓMO se añade una restricción al problema. Así, `model.py`
+# (sobre el MILP) y `sensitivity.py` (sobre el LP restringido con las activas)
+# generan restricciones idénticas en forma y nombre, sin duplicar la fórmula.
+def iterar_reglas_liquidez(datos: DatosCDT):
+    """Genera las restricciones de liquidez como tuplas abstractas.
+
+    Produce, para cada cota definida, una tupla
+        (claves_incluidas, sentido, rhs_fraccion, nombre)
+    donde `sentido ∈ {">=", "<="}` y `rhs_fraccion` es la fracción de A. Cubre:
+
+    1. Reglas por umbral de plazo `liquidez['reglas']`: para cada regla con
+       umbral `D`, el conjunto `{(i,j,k): j <= D}` con cota inferior
+       `min_frac` y/o superior `max_frac`. Nombre: `liquidez_hasta_<D>_<inf|sup>`.
+    2. Cotas corto/largo (retrocompatibilidad): partición `j <= 180` / `j > 180`
+       con `L_corto/U_corto/L_largo/U_largo`. Nombre: `liquidez_<corto|largo>_<inf|sup>`.
+
+    El llamador decide cómo materializar cada restricción (MILP o LP restringido).
+    """
+    liq = datos.liquidez or {}
+    combinaciones = datos.combinaciones
+
+    # 1) Reglas por umbral de plazo (liquidez en fechas intermedias).
+    for regla in liq.get("reglas", []) or []:
+        D = int(regla["hasta_dias"])
+        incluidas = [c for c in combinaciones if c[1] <= D]
+        min_frac = regla.get("min_frac")
+        max_frac = regla.get("max_frac")
+        if min_frac is not None:
+            yield (incluidas, ">=", float(min_frac), f"liquidez_hasta_{D}_inf")
+        if max_frac is not None:
+            yield (incluidas, "<=", float(max_frac), f"liquidez_hasta_{D}_sup")
+
+    # 2) Cotas corto/largo clásicas (solo si están definidas).
+    corto = [c for c in combinaciones if c[1] <= 180]
+    largo = [c for c in combinaciones if c[1] > 180]
+    for l_clave, u_clave, incluidas, etiqueta in (
+        ("L_corto", "U_corto", corto, "corto"),
+        ("L_largo", "U_largo", largo, "largo"),
     ):
         l_val = liq.get(l_clave)
         u_val = liq.get(u_clave)
-        # Cota inferior: L · A ≤ Σ x   (solo si L está definida).
         if l_val is not None:
-            modelo.problema += (
-                suma >= l_val * datos.A,
-                f"liquidez_{etiqueta}_inf",
-            )
-        # Cota superior: Σ x ≤ U · A   (solo si U está definida).
+            yield (incluidas, ">=", float(l_val), f"liquidez_{etiqueta}_inf")
         if u_val is not None:
-            modelo.problema += (
-                suma <= u_val * datos.A,
-                f"liquidez_{etiqueta}_sup",
-            )
+            yield (incluidas, "<=", float(u_val), f"liquidez_{etiqueta}_sup")
 
-    return modelo
+
+def agregar_restricciones_liquidez(datos: DatosCDT, var_de, agregar) -> list[str]:
+    """Añade las restricciones de liquidez usando los callables provistos.
+
+    Parámetros
+    ----------
+    datos:
+        `DatosCDT` con la política de liquidez.
+    var_de:
+        Callable `clave -> variable x` (en el LP restringido, solo las activas).
+    agregar:
+        Callable `(expresion, nombre) -> None` que añade la restricción.
+
+    Retorna la lista de nombres de restricción efectivamente añadidos.
+    """
+    nombres: list[str] = []
+    for incluidas, sentido, frac, nombre in iterar_reglas_liquidez(datos):
+        # Solo tiene sentido imponer la cota si hay variables en el grupo (en el
+        # LP restringido puede que ninguna activa caiga en el umbral).
+        vars_grupo = [var_de(c) for c in incluidas if _tiene_var(var_de, c)]
+        suma = pulp.lpSum(vars_grupo)
+        rhs = frac * datos.A
+        if sentido == ">=":
+            agregar(suma >= rhs, nombre)
+        else:
+            agregar(suma <= rhs, nombre)
+        nombres.append(nombre)
+    return nombres
+
+
+def iterar_topes_plazo(datos: DatosCDT):
+    """Genera los topes de concentración por plazo como tuplas abstractas.
+
+    Produce, para cada plazo `j` presente en las combinaciones utilizables y con
+    tope definido, la tupla `(claves_del_plazo, q_j, nombre)` donde `q_j` es la
+    fracción máxima de A permitida en ese plazo. La cota por plazo específico
+    (clave entera) tiene prioridad sobre la global (clave "default").
+    Nombre de restricción: `plazo_max_<j>`.
+    """
+    cpm = datos.concentracion_plazo_max or {}
+    if not cpm:
+        return
+    q_default = cpm.get("default")
+    plazos = sorted({c[1] for c in datos.combinaciones})
+    for j in plazos:
+        q_j = cpm.get(j, q_default)
+        if q_j is None:
+            continue
+        claves = [c for c in datos.combinaciones if c[1] == j]
+        yield (claves, float(q_j), f"plazo_max_{j}")
+
+
+def agregar_restricciones_plazo(datos: DatosCDT, var_de, agregar) -> list[str]:
+    """Añade los topes de concentración por plazo con los callables provistos.
+
+    Mismos parámetros que `agregar_restricciones_liquidez`. Retorna la lista de
+    nombres de restricción añadidos.
+    """
+    nombres: list[str] = []
+    for claves, q_j, nombre in iterar_topes_plazo(datos):
+        vars_grupo = [var_de(c) for c in claves if _tiene_var(var_de, c)]
+        if not vars_grupo:
+            continue
+        agregar(pulp.lpSum(vars_grupo) <= q_j * datos.A, nombre)
+        nombres.append(nombre)
+    return nombres
+
+
+def _tiene_var(var_de, clave) -> bool:
+    """True si `var_de(clave)` devuelve una variable (no None / no KeyError).
+
+    En el MILP todas las claves tienen variable; en el LP restringido solo las
+    activas. Este guard permite reutilizar los mismos helpers en ambos casos.
+    """
+    try:
+        return var_de(clave) is not None
+    except KeyError:
+        return False
 
 
 # ---------------------------------------------------------------------------
