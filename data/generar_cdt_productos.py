@@ -5,71 +5,57 @@ tramos = 105 filas, aplicando el principio RECTOR de trazabilidad honesta
 (Requisito 1.5): lo verificado se marca como real; lo derivado se marca como
 supuesto documentado. NUNCA se presenta como real una cifra no verificada.
 
+CAMBIO IMPORTANTE (datos reales por plazo)
+------------------------------------------
+Antes había UNA sola tasa real por banco (la "mejor tasa" a plazo largo) y el
+resto se derivaba con un perfil de curva y una prima por tramo INVENTADOS. Esta
+versión reemplaza ese perfil supuesto por la **curva de tasas E.A. REAL por
+plazo** de cada banco, tomada de fuentes verificadas (ver abajo). Con esto, la
+tasa de cada plazo deja de ser un supuesto y pasa a ser un dato real:
+
+  * Bancolombia y Davivienda: tasa E.A. promedio ponderada REPORTADA A LA
+    Superintendencia Financiera de Colombia (SFC), corte 29-oct-2026, publicada
+    por comparatodo.com.co. Para plazos >360 d la SFC publica un único valor
+    "más de 360 días", que se aplica a 540 y 720 d (dato real disponible para
+    el tramo largo; se documenta explícitamente).
+  * Banco de Bogota: tarifario propio por plazo (y por monto), vigente
+    oct-2026, publicado por ahorrar.com.co. Se usa el nivel del tramo de monto
+    más bajo ($100k-$49,9M, canal digital), que es el relevante para el rango
+    de capital del modelo.
+  * Nu Bank y Lulo Bank: tarifario propio por plazo, publicado por
+    ahorrar.com.co (vigencias oct-2026). Nu publica UNA tasa por plazo sin
+    desagregar por monto; Lulo publica dos niveles (cliente normal / Lulo Pro)
+    y se usa el nivel de cliente normal, contratable por cualquiera.
+
+Prima por tramo de monto = 0 (decisión documentada)
+---------------------------------------------------
+El mercado real casi NO premia el monto en el rango de capital del modelo:
+  * Nu y Lulo NO diferencian la tasa por monto.
+  * Bancolombia y Davivienda (vía SFC) publican un promedio sin desglose por
+    monto.
+  * Banco de Bogota sí desglosa por monto, pero sus cortes están en CIENTOS de
+    millones ($50M, $200M, $500M, $1.000M) —no coinciden con los tramos del
+    modelo (10M / 50M)— y la variación entre tramos es ínfima (~0.05 pp).
+Por tanto, para no INVENTAR una prima por tramo, se usa la MISMA tasa real del
+plazo en los tres tramos de monto (prima 0). Las tres filas de un mismo
+(banco, plazo) comparten la tasa real verificada y se marcan `es_supuesto=False`.
+Lo único "supuesto" que queda es la desagregación por tramo en sí (que el
+mercado no publica), pero la tasa NO es inventada.
+
 Fuentes y fecha de verificación
 -------------------------------
-Última verificación: 2026-10-21. Comparador público finanzasplus.co y
-tarifarios/prensa de cada entidad:
+Última verificación: 2026-11-01.
 
-  * Bancolombia .... https://finanzasplus.co/comparar/cdts/bancolombia
-                     Mejor tasa E.A. 11.20% (plazos 271-720 d). Min $500.000.
-                     Plazos 30-720 d.
-  * Banco de Bogota  https://finanzasplus.co/comparar/cdts/banco-de-bogota
-                     Mejor tasa E.A. 11.50% (541-720 d), ~10.30% a 360 d.
-                     Min $100.000. Plazos 30-720 d.
-  * Davivienda ..... https://finanzasplus.co/comparar/cdts/davivienda
-                     Mejor tasa E.A. 11.30% (541-720 d), ~11.15% a 360 d.
-                     Min $500.000. Plazos 30-720 d.
-  * Nu Bank ........ https://finanzasplus.co/comparar/cdts/nu
-                     Mejor tasa E.A. 11.40% (271-720 d). Min $50.000.
-                     Plazos 90-720 d (NO ofrece 30 ni 60).
-  * Lulo Bank ...... https://ayuda.lulobank.com/hc/es/articles/49263729501972-CDT-s-en-Lulo
-                     y https://www.larepublica.co/finanzas/cdt-de-lulo-supera-los-129-000-millones-en-captaciones-en-su-etapa-inicial-4420082
-                     Tasa vigente ~11-12% E.A.; campaña de lanzamiento hasta 13%
-                     E.A. para 180-540 d. Min $100.000. Plazos 90-540 d
-                     (NO ofrece 30, 60 ni 720).
-
-Distinción real-verificado vs derivado-supuesto (CRÍTICO)
----------------------------------------------------------
-Las fuentes publican sobre todo la "mejor tasa" (plazos largos) y dejan huecos
-en plazos cortos, y NINGUNA desagrega la tasa por los TRES tramos de monto del
-spec ([50k-10M] / [10M-50M] / >50M). Por tanto:
-
-  1) TASA ANCLA REAL por banco: la mejor tasa E.A. verificada arriba, aplicada
-     al plazo donde la fuente la reporta (el plazo ancla). Esa fila concreta
-     (banco, plazo_ancla, tramo=1) lleva `es_supuesto = False` y `fuente` con la
-     URL + "verificado 2026-10-21".
-  2) PERFIL DE CURVA por plazo (derivado, supuesto): las tasas de los demás
-     plazos se obtienen aplicando al ancla un ajuste en puntos porcentuales
-     (pp) segun el plazo. Plazos cortos pagan algo menos; plazos largos pagan la
-     mejor tasa (el ancla). El perfil es un supuesto de modelado documentado.
-  3) PRIMA DE TRAMO (derivado, supuesto): el tramo 1 usa la tasa base del plazo;
-     los tramos 2 y 3 añaden una prima pequeña (+0.20 pp y +0.40 pp) porque los
-     bancos suelen mejorar la tasa a mayor monto. La desagregación por tramo es
-     un supuesto de modelado (ninguna fuente la publica).
-
-Todas las filas derivadas (plazos distintos del ancla, y tramos 2 y 3) llevan
-`es_supuesto = True`, con `fuente` que explica que son el ancla real ajustada
-por el perfil de plazo / prima de tramo (supuesto de modelado), citando la URL.
-
-Perfil de curva por plazo (ajuste en pp respecto al ancla)
-----------------------------------------------------------
-El ancla (mejor tasa) corresponde a los plazos largos. El ajuste resta pp a los
-plazos cortos (curva creciente con el plazo), reflejando que el CDT a mayor
-plazo paga mas:
-
-    plazo (d):   30     60     90    180    360    540    720
-    ajuste(pp): -0.90  -0.80  -0.70  -0.50  -0.20   0.00   0.00
-
-Es decir, 540 y 720 d pagan el ancla (la mejor tasa); 360 d paga ~0.20 pp menos;
-los plazos muy cortos pagan hasta 0.90 pp menos. El plazo ancla de cada banco
-(donde la fuente reporta la mejor tasa) cae en la zona de ajuste 0.00 y es la
-fila que se marca como real verificada.
-
-Prima de tramo de monto (en pp sobre la tasa base del plazo)
-------------------------------------------------------------
-    tramo 1: +0.00 pp   (tasa base del plazo)
-    tramo 2: +0.20 pp   (supuesto de modelado)
-    tramo 3: +0.40 pp   (supuesto de modelado)
+  * Bancolombia .... https://comparatodo.com.co/cdt/bancolombia
+                     Tasas SFC, corte 29-oct-2026 (promedio ponderado E.A.).
+  * Davivienda ..... https://comparatodo.com.co/cdt/davivienda
+                     Tasas SFC, corte 29-oct-2026 (promedio ponderado E.A.).
+  * Banco de Bogota  https://www.ahorrar.com.co/cdt/banco-de-bogota
+                     Tarifario propio por plazo/monto (digital), oct-2026.
+  * Nu Bank ........ https://www.ahorrar.com.co/cdt/nu
+                     Tarifario propio por plazo, vigente 6-oct-2026.
+  * Lulo Bank ...... https://www.ahorrar.com.co/cdt/lulo-bank
+                     Tarifario propio por plazo, vigente 20-oct-2026.
 
 Disponibilidad por banco (verificada contra fuente)
 ---------------------------------------------------
@@ -97,7 +83,7 @@ PLAZOS = [30, 60, 90, 180, 360, 540, 720]
 TRAMOS = [1, 2, 3]
 
 # Fecha de verificación de las fuentes ---------------------------------------
-FECHA_VERIFICACION = "2026-10-21"
+FECHA_VERIFICACION = "2026-11-01"
 
 # Disponibilidad por banco: conjunto de plazos efectivamente ofrecidos -------
 PLAZOS_OFRECIDOS = {
@@ -119,94 +105,89 @@ MIN_APERTURA = {
 
 # URL de fuente por banco (para el campo `fuente`) ---------------------------
 URL_BANCO = {
-    "Bancolombia": "https://finanzasplus.co/comparar/cdts/bancolombia",
-    "Banco de Bogota": "https://finanzasplus.co/comparar/cdts/banco-de-bogota",
-    "Davivienda": "https://finanzasplus.co/comparar/cdts/davivienda",
-    "Nu Bank": "https://finanzasplus.co/comparar/cdts/nu",
-    "Lulo Bank": (
-        "https://ayuda.lulobank.com/hc/es/articles/49263729501972-CDT-s-en-Lulo"
-        " ; https://www.larepublica.co/finanzas/cdt-de-lulo-supera-los-129-000-"
-        "millones-en-captaciones-en-su-etapa-inicial-4420082"
-    ),
+    "Bancolombia": "https://comparatodo.com.co/cdt/bancolombia",
+    "Banco de Bogota": "https://www.ahorrar.com.co/cdt/banco-de-bogota",
+    "Davivienda": "https://comparatodo.com.co/cdt/davivienda",
+    "Nu Bank": "https://www.ahorrar.com.co/cdt/nu",
+    "Lulo Bank": "https://www.ahorrar.com.co/cdt/lulo-bank",
 }
 
-# Tasa ANCLA REAL por banco (mejor tasa E.A. verificada), como fraccion, y el
-# plazo ancla donde la fuente la reporta. Esa fila (banco, plazo_ancla, tramo=1)
-# es la unica marcada como REAL verificada (es_supuesto=False).
-# Para los bancos con tope en plazos largos (271-720), el plazo ancla del
-# conjunto J donde el ajuste de curva es 0.00 es 540 d (dentro de ese rango).
-ANCLA = {
-    "Bancolombia": {"tasa": 0.1120, "plazo": 540},
-    "Banco de Bogota": {"tasa": 0.1150, "plazo": 540},
-    "Davivienda": {"tasa": 0.1130, "plazo": 540},
-    "Nu Bank": {"tasa": 0.1140, "plazo": 540},
-    # Lulo: tasa vigente conservadora dentro del rango ~11-12% (no la campaña
-    # promocional del 13%, que es temporal). Plazo ancla 540 d (tope 90-540).
-    "Lulo Bank": {"tasa": 0.1150, "plazo": 540},
+# Origen del dato por banco (para documentar en el campo `fuente`) -----------
+ORIGEN_BANCO = {
+    "Bancolombia": "tasa SFC promedio ponderada E.A., corte 29-oct-2026",
+    "Banco de Bogota": "tarifario digital por plazo (tramo $100k-$49,9M), oct-2026",
+    "Davivienda": "tasa SFC promedio ponderada E.A., corte 29-oct-2026",
+    "Nu Bank": "tarifario por plazo, vigente 6-oct-2026",
+    "Lulo Bank": "tarifario por plazo (cliente estandar), vigente 20-oct-2026",
 }
 
-# Perfil de curva por plazo: ajuste en pp respecto al ancla (ver docstring) ---
-AJUSTE_PLAZO_PP = {
-    30: -0.90,
-    60: -0.80,
-    90: -0.70,
-    180: -0.50,
-    360: -0.20,
-    540: 0.00,
-    720: 0.00,
+# ---------------------------------------------------------------------------
+# CURVA DE TASAS E.A. REAL POR BANCO Y PLAZO (fraccion)
+# ---------------------------------------------------------------------------
+# Cada valor es una tasa REAL verificada en la fuente del banco (no derivada).
+# `None` marca un plazo NO ofrecido por el banco (se vuelve disponible=False).
+#
+# Notas de mapeo de plazos a los tramos de dias de cada fuente:
+#   * Banco de Bogota: 30->30-59d, 60->60-89d, 90->90-119d, 180->180-209d,
+#     360->360-389d, 540->510-540d, 720->720-999d (nivel $100k-$49,9M digital).
+#   * Nu / Lulo: 90=3m, 180=6m, 360=12m, 540=18m, 720=24m.
+#   * Bancolombia / Davivienda (SFC): 540 y 720 usan el valor "mas de 360 dias"
+#     (unico dato real publicado por la SFC para el tramo largo).
+TASA_REAL = {
+    "Bancolombia": {
+        30: 0.0974, 60: 0.0984, 90: 0.1048, 180: 0.1104,
+        360: 0.1201, 540: 0.1155, 720: 0.1155,
+    },
+    "Davivienda": {
+        30: 0.0881, 60: 0.0883, 90: 0.1026, 180: 0.1071,
+        360: 0.1209, 540: 0.1202, 720: 0.1202,
+    },
+    "Banco de Bogota": {
+        30: 0.0875, 60: 0.0890, 90: 0.0945, 180: 0.0990,
+        360: 0.1030, 540: 0.1050, 720: 0.1150,
+    },
+    "Nu Bank": {
+        30: None, 60: None, 90: 0.0970, 180: 0.1055,
+        360: 0.1105, 540: 0.1140, 720: 0.1140,
+    },
+    "Lulo Bank": {
+        30: None, 60: None, 90: 0.1000, 180: 0.1100,
+        360: 0.1150, 540: 0.1250, 720: None,
+    },
 }
 
-# Prima de tramo de monto: pp sobre la tasa base del plazo (ver docstring) ----
+# Prima de tramo de monto: pp sobre la tasa real del plazo. Cero por decision
+# documentada (el mercado real no premia el monto en el rango del modelo).
 PRIMA_TRAMO_PP = {
     1: 0.00,
-    2: 0.20,
-    3: 0.40,
+    2: 0.00,
+    3: 0.00,
 }
 
 
 def _tasa_ijk(banco: str, plazo: int, tramo: int) -> float:
-    """Tasa E.A. derivada para (banco, plazo, tramo) a partir del ancla real.
+    """Tasa E.A. real para (banco, plazo, tramo).
 
-    tasa = ancla + ajuste_plazo(pp)/100 + prima_tramo(pp)/100
-
-    El ajuste y la prima estan en puntos porcentuales; se dividen por 100 para
-    pasar a fraccion. Se redondea a 4 decimales (precision de punto basico).
+    Es la tasa REAL del plazo (verificada en fuente) mas la prima de tramo (0).
+    Se redondea a 4 decimales (precision de punto basico).
     """
-    base = ANCLA[banco]["tasa"]
-    ajuste = AJUSTE_PLAZO_PP[plazo] / 100.0
+    base = TASA_REAL[banco][plazo]
     prima = PRIMA_TRAMO_PP[tramo] / 100.0
-    return round(base + ajuste + prima, 4)
+    return round(base + prima, 4)
 
 
-def _es_ancla_real(banco: str, plazo: int, tramo: int) -> bool:
-    """True si (banco, plazo, tramo) es la fila del ancla real verificada.
-
-    Es la combinacion tramo=1 en el plazo ancla del banco: ahi el ajuste de
-    curva es 0.00 y la prima de tramo es 0.00, de modo que la tasa coincide
-    exactamente con la mejor tasa E.A. publicada por la fuente.
-    """
-    return tramo == 1 and plazo == ANCLA[banco]["plazo"]
-
-
-def _fuente_real(banco: str) -> str:
-    """Fuente para la fila del ancla real verificada."""
-    tasa_pct = ANCLA[banco]["tasa"] * 100
-    return (
-        f"REAL verificado {FECHA_VERIFICACION}: mejor tasa E.A. {tasa_pct:.2f}% "
-        f"(plazo ancla {ANCLA[banco]['plazo']}d, tramo 1). Fuente: {URL_BANCO[banco]}"
+def _fuente_real(banco: str, plazo: int, tramo: int) -> str:
+    """Fuente para una fila con tasa real por plazo (es_supuesto=False)."""
+    tasa_pct = TASA_REAL[banco][plazo] * 100
+    nota_tramo = (
+        "" if tramo == 1 else
+        " La tasa real del plazo se aplica a los 3 tramos de monto (el mercado "
+        "no premia el monto en este rango); solo la desagregacion por tramo es "
+        "supuesta, no la tasa."
     )
-
-
-def _fuente_derivada(banco: str, plazo: int, tramo: int) -> str:
-    """Fuente para una fila derivada por perfil de plazo / prima de tramo."""
-    ajuste = AJUSTE_PLAZO_PP[plazo]
-    prima = PRIMA_TRAMO_PP[tramo]
-    tasa_ancla_pct = ANCLA[banco]["tasa"] * 100
     return (
-        f"SUPUESTO (es_supuesto=True): tasa ancla REAL {tasa_ancla_pct:.2f}% E.A. "
-        f"ajustada por perfil de plazo ({ajuste:+.2f} pp) y prima de tramo "
-        f"({prima:+.2f} pp) — supuesto de modelado documentado en "
-        f"generar_cdt_productos.py. Ancla verificada {FECHA_VERIFICACION} en "
+        f"REAL verificado {FECHA_VERIFICACION}: {ORIGEN_BANCO[banco]}; "
+        f"tasa E.A. {tasa_pct:.2f}% a {plazo}d.{nota_tramo} Fuente: "
         f"{URL_BANCO[banco]}"
     )
 
@@ -224,7 +205,10 @@ def construir_filas() -> list[dict]:
     filas: list[dict] = []
     for banco in BANCOS:
         for plazo in PLAZOS:
-            ofrecido = plazo in PLAZOS_OFRECIDOS[banco]
+            ofrecido = (
+                plazo in PLAZOS_OFRECIDOS[banco]
+                and TASA_REAL[banco].get(plazo) is not None
+            )
             for tramo in TRAMOS:
                 if not ofrecido:
                     filas.append(
@@ -241,18 +225,9 @@ def construir_filas() -> list[dict]:
                     )
                     continue
 
-                if _es_ancla_real(banco, plazo, tramo):
-                    # Fila del ancla real verificada: tasa publicada por la
-                    # fuente, es_supuesto=False.
-                    tasa = round(ANCLA[banco]["tasa"], 4)
-                    fuente = _fuente_real(banco)
-                    es_supuesto = False
-                else:
-                    # Fila derivada por perfil de plazo / prima de tramo.
-                    tasa = _tasa_ijk(banco, plazo, tramo)
-                    fuente = _fuente_derivada(banco, plazo, tramo)
-                    es_supuesto = True
-
+                # Fila con tasa REAL del plazo (es_supuesto=False). La prima de
+                # tramo es 0, de modo que los 3 tramos comparten la tasa real.
+                tasa = _tasa_ijk(banco, plazo, tramo)
                 filas.append(
                     {
                         "banco": banco,
@@ -261,8 +236,8 @@ def construir_filas() -> list[dict]:
                         "tasa_ea": f"{tasa:.4f}",
                         "min_apertura": MIN_APERTURA[banco],
                         "disponible": True,
-                        "fuente": fuente,
-                        "es_supuesto": es_supuesto,
+                        "fuente": _fuente_real(banco, plazo, tramo),
+                        "es_supuesto": False,
                     }
                 )
     return filas
@@ -296,13 +271,15 @@ def main() -> None:
     print(f"  no disponibles          : {no_disp}")
     print(f"  con tasa_ea (utilizable): {con_tasa}")
     print(f"  REAL verificada (es_supuesto=False): {reales}")
-    print(f"  derivada  (es_supuesto=True)       : {supuestas}")
-    print("  Anclas reales por banco:")
+    print(f"  no ofrecidas (es_supuesto=True)    : {supuestas}")
+    print("  Curva de tasas reales por banco (E.A. por plazo):")
     for banco in BANCOS:
-        print(
-            f"    {banco:16s} {ANCLA[banco]['tasa'] * 100:.2f}% E.A. "
-            f"@ {ANCLA[banco]['plazo']}d (tramo 1)"
+        tramos_txt = ", ".join(
+            f"{p}d={TASA_REAL[banco][p] * 100:.2f}%"
+            for p in PLAZOS
+            if TASA_REAL[banco].get(p) is not None
         )
+        print(f"    {banco:16s} {tramos_txt}")
 
 
 if __name__ == "__main__":
