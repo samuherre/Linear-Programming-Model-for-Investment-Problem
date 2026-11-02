@@ -34,3 +34,9 @@ Thumbs.db
 # ---- Variables de entorno sensibles ----
 .env
 .env.*
+
+# ---- ngrok (binario externo; cada quien lo instala por su cuenta) ----
+ngrok/
+ngrok.exe
+ngrok.yml
+*.ngrok.yml
