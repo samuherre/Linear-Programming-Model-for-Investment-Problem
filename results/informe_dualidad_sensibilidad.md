@@ -1,6 +1,6 @@
 # Informe de dualidad y análisis de sensibilidad
 
-_Generado: 2026-10-22 00:27:22_
+_Generado: 2026-11-02 17:49:44_
 
 > **ADVERTENCIA (Requisito 4.7).** Todo el análisis de este
 > informe —precios sombra, interpretación económica, rangos de
@@ -12,29 +12,41 @@ _Generado: 2026-10-22 00:27:22_
 > este LP (binarias fijadas). Interpretar los resultados en ese
 > marco.
 
+> **DEGENERACIÓN.** ADVERTENCIA: el LP restringido es DEGENERADO (alguna variable básica pegada a su cota o restricción activa con dual nulo). Los rangos de sensibilidad pueden NO ser únicos y el precio sombra puede no ser una derivada bien definida; interpretar con cautela (design.md).
+
 ## 1. Estado del LP restringido
 
 - Estado del solver: `Optimal`
 - Óptimo alcanzado: `True`
-- Valor objetivo `Z* = Σ f_ijk·x*_ijk`: **24,590,300.00**
+- Valor objetivo `Z* = Σ f_ijk·x*_ijk`: **15,405,781.00**
 - Capital sin colocar `s_0*`: **0.00** (capital agotado: `True`)
 
 ## 2. Precios sombra (valores duales)
 
 | Recurso | Símbolo | Precio sombra |
 | --- | --- | --- |
-| Capital `Σx + s_0 = A` | `λ*` | 0.24322500 |
-| Concentración banco Banco de Bogota `≤ p_i·A` | `μ_Banco de Bogota*` | 0.00446400 |
+| Capital `Σx + s_0 = A` | `λ*` | 0.12010000 |
+| Concentración banco Bancolombia `≤ p_i·A` | `μ_Bancolombia*` | -0.00000000 |
 | Concentración banco Davivienda `≤ p_i·A` | `μ_Davivienda*` | -0.00000000 |
-| Concentración banco Nu Bank `≤ p_i·A` | `μ_Nu Bank*` | 0.00223100 |
+| Concentración banco Lulo Bank `≤ p_i·A` | `μ_Lulo Bank*` | -0.00000000 |
+| Liquidez `liquidez_hasta_180_inf` | `σ_liquidez_hasta_180_inf*` | -0.06653463 |
+| Liquidez `liquidez_hasta_360_inf` | `σ_liquidez_hasta_360_inf*` | -0.00000000 |
+| Liquidez `plazo_max_180` | `σ_plazo_max_180*` | -0.00000000 |
+| Liquidez `plazo_max_360` | `σ_plazo_max_360*` | -0.00000000 |
+| Liquidez `plazo_max_720` | `σ_plazo_max_720*` | 0.13474804 |
 
 ## 3. Interpretación económica (Req. 4.3)
 
-- λ* = 0.24322500: retorno marginal de una unidad adicional de capital A. Es el incremento del objetivo Σ f_ijk·x_ijk por cada peso extra de capital disponible, manteniendo óptima la base del LP restringido.
-- μ_Banco de Bogota* = 0.00446400 > 0: el tope de concentración p·A del banco 'Banco de Bogota' está ACTIVO. Es el costo de oportunidad de la diversificación: cuánto rendimiento extra se ganaría si se permitiera colocar un peso más en ese banco.
+- λ* = 0.12010000: retorno marginal de una unidad adicional de capital A. Es el incremento del objetivo Σ f_ijk·x_ijk por cada peso extra de capital disponible, manteniendo óptima la base del LP restringido.
+- μ_Bancolombia* ≈ 0: el tope de concentración del banco 'Bancolombia' NO está activo (hay holgura); relajarlo no mejoraría el objetivo.
 - μ_Davivienda* ≈ 0: el tope de concentración del banco 'Davivienda' NO está activo (hay holgura); relajarlo no mejoraría el objetivo.
-- μ_Nu Bank* = 0.00223100 > 0: el tope de concentración p·A del banco 'Nu Bank' está ACTIVO. Es el costo de oportunidad de la diversificación: cuánto rendimiento extra se ganaría si se permitiera colocar un peso más en ese banco.
-- s_0* ≈ 0 (capital agotado): λ* = 0.24322500 revela el valor marginal del capital: cada peso adicional sí se colocaría y produciría ese rendimiento extra.
+- μ_Lulo Bank* ≈ 0: el tope de concentración del banco 'Lulo Bank' NO está activo (hay holgura); relajarlo no mejoraría el objetivo.
+- σ_liquidez_hasta_180_inf* = -0.06653463: la cota de liquidez 'liquidez_hasta_180_inf' está activa; es el costo/valor marginal en rendimiento de exigir ese reparto de capital entre plazos cortos y largos.
+- σ_liquidez_hasta_360_inf* ≈ 0: la cota de liquidez 'liquidez_hasta_360_inf' no está activa; no restringe la solución óptima.
+- σ_plazo_max_180* ≈ 0: la cota de liquidez 'plazo_max_180' no está activa; no restringe la solución óptima.
+- σ_plazo_max_360* ≈ 0: la cota de liquidez 'plazo_max_360' no está activa; no restringe la solución óptima.
+- σ_plazo_max_720* = 0.13474804: la cota de liquidez 'plazo_max_720' está activa; es el costo/valor marginal en rendimiento de exigir ese reparto de capital entre plazos cortos y largos.
+- s_0* ≈ 0 (capital agotado): λ* = 0.12010000 revela el valor marginal del capital: cada peso adicional sí se colocaría y produciría ese rendimiento extra.
 
 ## 4. Rangos de sensibilidad
 
@@ -44,18 +56,24 @@ _Generado: 2026-10-22 00:27:22_
 
 | Combinación (i,j,k) | `f` base | Límite inferior | Límite superior | Baja ≤ | Sube ≤ |
 | --- | --- | --- | --- | --- | --- |
-| `Banco de Bogota|720|2` | 0.247689 | 0.239433 | +∞ | 0.008256 | +∞ |
-| `Davivienda|720|2` | 0.243225 | 0.000000 | 0.251333 | 0.243225 | 0.008107 |
-| `Nu Bank|720|2` | 0.245456 | 0.237274 | +∞ | 0.008182 | +∞ |
+| `Bancolombia|180|1` | 0.053755 | 0.051963 | +∞ | 0.001792 | +∞ |
+| `Bancolombia|360|2` | 0.120100 | 0.052043 | 0.256213 | 0.068057 | 0.136113 |
+| `Davivienda|720|2` | 0.254848 | 0.118929 | +∞ | 0.135919 | +∞ |
+| `Lulo Bank|180|2` | 0.053565 | −∞ | 0.055351 | +∞ | 0.001786 |
 
 ### 4.2 Lado derecho RHS: capital `A` y topes `p_i·A` (Req. 4.6)
 
 | Recurso | RHS base | Límite inferior | Límite superior | Baja ≤ | Sube ≤ |
 | --- | --- | --- | --- | --- | --- |
-| `capital_A` | 100,000,000.00 | 90,000,000.00 | 120,000,000.00 | 10,000,000.00 | 20,000,000.00 |
-| `concentracion_Banco de Bogota` | 40,000,000.00 | 20,000,000.00 | 50,000,000.00 | 20,000,000.00 | 10,000,000.00 |
-| `concentracion_Davivienda` | 40,000,000.00 | 20,000,000.00 | +∞ | 20,000,000.00 | +∞ |
-| `concentracion_Nu Bank` | 40,000,000.00 | 20,000,000.00 | 50,000,000.00 | 20,000,000.00 | 10,000,000.00 |
+| `capital_A` | 100,000,000.00 | 99,000,000.00 | 101,000,000.00 | 1,000,000.00 | 1,000,000.00 |
+| `concentracion_Bancolombia` | 40,000,000.00 | 39,600,000.00 | 40,400,000.00 | 400,000.00 | 400,000.00 |
+| `concentracion_Davivienda` | 40,000,000.00 | 39,600,000.00 | 40,400,000.00 | 400,000.00 | 400,000.00 |
+| `concentracion_Lulo Bank` | 40,000,000.00 | 20,000,000.00 | +∞ | 20,000,000.00 | +∞ |
+| `liquidez_hasta_180_inf` | 30,000,000.00 | 29,700,000.00 | 30,300,000.00 | 300,000.00 | 300,000.00 |
+| `liquidez_hasta_360_inf` | 60,000,000.00 | 59,400,000.00 | 60,600,000.00 | 600,000.00 | 600,000.00 |
+| `plazo_max_180` | 40,000,000.00 | 30,000,000.00 | +∞ | 10,000,000.00 | +∞ |
+| `plazo_max_360` | 40,000,000.00 | 30,000,000.00 | +∞ | 10,000,000.00 | +∞ |
+| `plazo_max_720` | 40,000,000.00 | 39,600,000.00 | 40,400,000.00 | 400,000.00 | 400,000.00 |
 
 Dentro de cada intervalo la base óptima (y el precio sombra) se mantiene y la variación del objetivo es lineal: `Δobjetivo = π·Δb`.
 
@@ -71,11 +89,13 @@ Términos más holgados (mayor |producto| primero):
 
 | Tipo | Nombre | Factor A | Factor B | Producto |
 | --- | --- | --- | --- | --- |
-| restriccion | `capital_total` | -0 | 0.243225 | -0.00e+00 |
-| restriccion | `concentracion_Banco_de_Bogota` | -0 | 0.004464 | -0.00e+00 |
-| restriccion | `concentracion_Davivienda` | 2e+07 | -0 | -0.00e+00 |
-| restriccion | `concentracion_Nu_Bank` | -0 | 0.002231 | -0.00e+00 |
-| variable | `x_Banco_de_Bogota_720_2` | 0 | 1e+07 | 0.00e+00 |
-| variable | `x_Davivienda_720_2` | 0 | 1e+07 | 0.00e+00 |
-| variable | `x_Nu_Bank_720_2` | 0 | 1e+07 | 0.00e+00 |
-| variable | `s_0` | -0.243225 | 0 | -0.00e+00 |
+| restriccion | `capital_total` | -0 | 0.1201 | -0.00e+00 |
+| restriccion | `concentracion_Bancolombia` | -0 | -0 | 0.00e+00 |
+| restriccion | `concentracion_Davivienda` | -0 | -0 | 0.00e+00 |
+| restriccion | `concentracion_Lulo_Bank` | 2e+07 | -0 | -0.00e+00 |
+| restriccion | `liquidez_hasta_180_inf` | -0 | -0.0665346 | 0.00e+00 |
+| restriccion | `liquidez_hasta_360_inf` | -0 | -0 | 0.00e+00 |
+| restriccion | `plazo_max_180` | 1e+07 | -0 | -0.00e+00 |
+| restriccion | `plazo_max_360` | 1e+07 | -0 | -0.00e+00 |
+| restriccion | `plazo_max_720` | -0 | 0.134748 | -0.00e+00 |
+| variable | `x_Bancolombia_180_1` | 0.000189814 | 0 | 0.00e+00 |

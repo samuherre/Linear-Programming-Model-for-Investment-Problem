@@ -43,6 +43,7 @@ from typing import Optional
 import pulp
 
 from data_loader import DatosCDT
+from model import agregar_restricciones_liquidez, agregar_restricciones_plazo
 from solver import ResultadoCDT
 
 
@@ -261,28 +262,26 @@ def construir_lp_restringido(
         )
         restr_concentracion[banco] = problema.constraints[nombre_c]
 
-    # --- Liquidez corto/largo plazo (solo cotas definidas) ------------------
-    liq = datos.liquidez
-    corto = [c for c in activas if c[1] <= 180]
-    largo = [c for c in activas if c[1] > 180]
-    suma_corto = pulp.lpSum(x[c] for c in corto)
-    suma_largo = pulp.lpSum(x[c] for c in largo)
-
+    # --- Liquidez por fechas / corto-largo + concentración por plazo --------
+    # Se reutilizan EXACTAMENTE los mismos helpers que el MILP (model.py), pero
+    # restringidos a las variables activas, para que el LP restringido reproduzca
+    # las mismas restricciones y sus duales sean coherentes. La variable de una
+    # clave NO activa no existe: `var_de` lanza KeyError y el helper la omite.
     restr_liquidez: dict[str, pulp.LpConstraint] = {}
-    for l_clave, u_clave, suma, etiqueta in (
-        ("L_corto", "U_corto", suma_corto, "corto"),
-        ("L_largo", "U_largo", suma_largo, "largo"),
-    ):
-        l_val = liq.get(l_clave)
-        u_val = liq.get(u_clave)
-        if l_val is not None:
-            nombre_li = f"liquidez_{etiqueta}_inf"
-            problema += (suma >= l_val * datos.A, nombre_li)
-            restr_liquidez[nombre_li] = problema.constraints[nombre_li]
-        if u_val is not None:
-            nombre_ls = f"liquidez_{etiqueta}_sup"
-            problema += (suma <= u_val * datos.A, nombre_ls)
-            restr_liquidez[nombre_ls] = problema.constraints[nombre_ls]
+
+    def _var_de(clave):
+        return x[clave]  # KeyError si la clave no está activa (lo maneja el helper)
+
+    def _agregar(expr, nombre):
+        problema.__iadd__((expr, nombre))
+        restr_liquidez[nombre] = problema.constraints[nombre]
+
+    agregar_restricciones_liquidez(datos, _var_de, _agregar)
+
+    # Concentración por plazo: se guarda en restr_liquidez bajo claves
+    # `plazo_max_<j>` para que fluya al informe de precios sombra como una
+    # restricción de política más (sigma), sin tocar report.py.
+    agregar_restricciones_plazo(datos, _var_de, _agregar)
 
     return LPRestringido(
         problema=problema,
@@ -1188,6 +1187,13 @@ def calcular_rangos_sensibilidad(
         for banco, restr in lp.restr_concentracion.items():
             rhs[f"concentracion_{banco}"] = _rango_rhs(
                 lp, f"concentracion {banco} (p·A)", restr, base_ref, solver
+            )
+        # RHS de las restricciones de liquidez por fecha y de los topes por
+        # plazo (ambas viven en restr_liquidez). Su rango indica cuánto puede
+        # moverse la fracción exigida/permitida sin cambiar la base óptima.
+        for nombre, restr in lp.restr_liquidez.items():
+            rhs[nombre] = _rango_rhs(
+                lp, f"{nombre} (frac·A)", restr, base_ref, solver
             )
 
     advertencia = ""

@@ -115,9 +115,13 @@ class DatosCDT:
     p: dict[str, float]
     A: float
     tramos_limites: dict[int, tuple[float, Optional[float]]]
-    liquidez: dict[str, Optional[float]]
+    liquidez: dict[str, Any]
     combinaciones: list[tuple[str, int, int]] = field(default_factory=list)
     info: dict[str, Any] = field(default_factory=dict)
+    # Concentración máxima por plazo q_j (diversificación de plazos). Clave
+    # "default" = cota global; claves enteras = cota por plazo específico.
+    # Dict vacío = restricción desactivada.
+    concentracion_plazo_max: dict[Any, float] = field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------
@@ -285,12 +289,12 @@ def _validar_config(config: dict[str, Any]) -> None:
                 f"Concentración p_i de '{banco}'={p_i} debe estar en (0, 1]."
             )
 
-    # --- Liquidez: fracciones en [0, 1] o None, con L ≤ U -------------------
+    # --- Liquidez: cotas corto/largo (compat) + reglas por umbral de plazo --
     liq = config["liquidez"]
+    # Cotas corto/largo: opcionales para retrocompatibilidad. Si faltan, se
+    # tratan como None (desactivadas); no se exige su presencia.
     for clave in ("L_corto", "U_corto", "L_largo", "U_largo"):
-        if clave not in liq:
-            raise DataLoaderError(f"Falta la cota de liquidez '{clave}'.")
-        val = liq[clave]
+        val = liq.get(clave)
         if val is not None and not (0 <= val <= 1):
             raise DataLoaderError(
                 f"Cota de liquidez '{clave}'={val} debe estar en [0, 1] o ser None."
@@ -299,10 +303,65 @@ def _validar_config(config: dict[str, Any]) -> None:
         ("L_corto", "U_corto", "corto"),
         ("L_largo", "U_largo", "largo"),
     ):
-        if liq[lo] is not None and liq[hi] is not None and liq[lo] > liq[hi]:
+        if liq.get(lo) is not None and liq.get(hi) is not None and liq[lo] > liq[hi]:
             raise DataLoaderError(
                 f"Liquidez {etiqueta}: L={liq[lo]} no puede superar U={liq[hi]}."
             )
+    # Reglas por umbral de plazo: liquidez en FECHAS intermedias (Req. nuevo).
+    # Cada regla: {"hasta_dias": D, "min_frac": .., "max_frac": ..}.
+    reglas = liq.get("reglas", [])
+    if reglas is not None:
+        if not isinstance(reglas, (list, tuple)):
+            raise DataLoaderError(
+                "liquidez['reglas'] debe ser una lista de reglas "
+                "{'hasta_dias', 'min_frac', 'max_frac'}."
+            )
+        for idx, regla in enumerate(reglas):
+            if not isinstance(regla, dict) or "hasta_dias" not in regla:
+                raise DataLoaderError(
+                    f"Regla de liquidez #{idx} inválida: debe ser un dict con "
+                    "al menos 'hasta_dias'."
+                )
+            D = regla["hasta_dias"]
+            if not isinstance(D, (int, float)) or int(D) != D or D <= 0:
+                raise DataLoaderError(
+                    f"Regla de liquidez #{idx}: 'hasta_dias'={D} debe ser un "
+                    "entero positivo (días)."
+                )
+            lo = regla.get("min_frac")
+            hi = regla.get("max_frac")
+            for nombre, val in (("min_frac", lo), ("max_frac", hi)):
+                if val is not None and not (0 <= val <= 1):
+                    raise DataLoaderError(
+                        f"Regla de liquidez #{idx}: '{nombre}'={val} debe estar "
+                        "en [0, 1] o ser None."
+                    )
+            if lo is not None and hi is not None and lo > hi:
+                raise DataLoaderError(
+                    f"Regla de liquidez #{idx} (hasta {int(D)}d): "
+                    f"min_frac={lo} no puede superar max_frac={hi}."
+                )
+
+    # --- Concentración máxima por plazo q_j (diversificación de plazos) -----
+    # Opcional. Clave "default" = cota global; claves enteras = por plazo.
+    cpm = config.get("concentracion_plazo_max", {})
+    if cpm is not None:
+        if not isinstance(cpm, dict):
+            raise DataLoaderError(
+                "concentracion_plazo_max debe ser un dict {'default': q, "
+                "<plazo>: q_j, ...} o estar vacío."
+            )
+        for clave, q in cpm.items():
+            if clave != "default":
+                if not isinstance(clave, (int, float)) or int(clave) != clave:
+                    raise DataLoaderError(
+                        f"concentracion_plazo_max: clave '{clave}' debe ser "
+                        "'default' o un plazo entero."
+                    )
+            if not isinstance(q, (int, float)) or not (0 < q <= 1):
+                raise DataLoaderError(
+                    f"concentracion_plazo_max['{clave}']={q} debe estar en (0, 1]."
+                )
 
 
 # ---------------------------------------------------------------------------
@@ -522,6 +581,7 @@ def cargar_datos(
         liquidez=dict(config["liquidez"]),
         combinaciones=combinaciones,
         info=info,
+        concentracion_plazo_max=dict(config.get("concentracion_plazo_max", {}) or {}),
     )
 
 

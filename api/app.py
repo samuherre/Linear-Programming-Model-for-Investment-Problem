@@ -162,6 +162,28 @@ class CotasLiquidez(BaseModel):
     )
 
 
+class ReglaLiquidez(BaseModel):
+    """Regla de liquidez por fecha: fracción de A que vence en ≤ hasta_dias.
+
+    Modela la necesidad de disponer de parte del capital en una fecha intermedia
+    (p. ej. a los 180 días) sin inmovilizar todo el dinero en el plazo más
+    rentable. Restringe el capital colocado en CDT con plazo ≤ hasta_dias:
+        min_frac·A ≤ (capital en plazos ≤ hasta_dias) ≤ max_frac·A
+    """
+
+    hasta_dias: int = Field(
+        gt=0, description="Umbral de plazo en días. Agrupa los CDT que vencen en ≤ este valor."
+    )
+    min_frac: Optional[float] = Field(
+        default=None, ge=0, le=1,
+        description="Fracción mínima de A que debe vencer en ≤ hasta_dias (0..1) o null.",
+    )
+    max_frac: Optional[float] = Field(
+        default=None, ge=0, le=1,
+        description="Fracción máxima de A que puede quedar en ≤ hasta_dias (0..1) o null.",
+    )
+
+
 class OptimizarRequest(BaseModel):
     """Parámetros OPCIONALES de escenario para `POST /optimizar`.
 
@@ -180,7 +202,22 @@ class OptimizarRequest(BaseModel):
         ),
     )
     liquidez: Optional[CotasLiquidez] = Field(
-        default=None, description="Cotas de liquidez. Por defecto, las de config (None=off)."
+        default=None, description="Cotas de liquidez corto/largo. Por defecto, las de config (None=off)."
+    )
+    liquidez_reglas: Optional[list[ReglaLiquidez]] = Field(
+        default=None,
+        description=(
+            "Reglas de liquidez por fecha. Sobrescriben las reglas de config. "
+            "Lista vacía [] las desactiva; null = usar las de config."
+        ),
+    )
+    concentracion_plazo_max: Optional[Any] = Field(
+        default=None,
+        description=(
+            "Diversificación por plazo: fracción máxima de A en un mismo plazo. "
+            "Un único float (0..1] aplica a TODOS los plazos, o un dict "
+            "{'default': q, <plazo>: q_j}. Evita concentrar todo en un plazo."
+        ),
     )
     tasas: Optional[dict[str, float]] = Field(
         default=None,
@@ -199,7 +236,11 @@ class OptimizarRequest(BaseModel):
                 {
                     "A": 150000000,
                     "concentracion_max": {"Bancolombia": 0.25, "Nu Bank": 0.5},
-                    "liquidez": {"U_corto": 0.6},
+                    "liquidez_reglas": [
+                        {"hasta_dias": 180, "min_frac": 0.30},
+                        {"hasta_dias": 360, "min_frac": 0.60},
+                    ],
+                    "concentracion_plazo_max": 0.40,
                     "tasas": {"Bancolombia|360|2": 0.125},
                 },
             ]
@@ -248,7 +289,12 @@ def _construir_config_override(req: OptimizarRequest) -> dict[str, Any]:
         "tramos": base["tramos"],
         "concentracion_max": dict(base["concentracion_max"]),
         "liquidez": dict(base["liquidez"]),
+        "concentracion_plazo_max": dict(base.get("concentracion_plazo_max", {}) or {}),
     }
+    # Copia profunda de las reglas de liquidez (lista de dicts) para no mutar base.
+    config["liquidez"]["reglas"] = [
+        dict(r) for r in (base.get("liquidez", {}).get("reglas", []) or [])
+    ]
 
     if req.A is not None:
         config["A"] = float(req.A)
@@ -281,10 +327,51 @@ def _construir_config_override(req: OptimizarRequest) -> dict[str, Any]:
             )
 
     if req.liquidez is not None:
-        liq = dict(config["liquidez"])
+        # Override de las 4 cotas corto/largo (compatibilidad).
         for clave, valor in req.liquidez.model_dump().items():
-            liq[clave] = valor
-        config["liquidez"] = liq
+            config["liquidez"][clave] = valor
+
+    if req.liquidez_reglas is not None:
+        # Reemplaza por completo las reglas por fecha ([] las desactiva).
+        config["liquidez"]["reglas"] = [
+            {
+                "hasta_dias": int(regla.hasta_dias),
+                "min_frac": regla.min_frac,
+                "max_frac": regla.max_frac,
+            }
+            for regla in req.liquidez_reglas
+        ]
+
+    if req.concentracion_plazo_max is not None:
+        cpm = req.concentracion_plazo_max
+        if isinstance(cpm, (int, float)):
+            # Un único float = tope global para todos los plazos.
+            config["concentracion_plazo_max"] = {"default": float(cpm)}
+        elif isinstance(cpm, dict):
+            nuevo: dict[Any, float] = {}
+            for clave, valor in cpm.items():
+                if clave == "default":
+                    nuevo["default"] = float(valor)
+                else:
+                    try:
+                        nuevo[int(clave)] = float(valor)
+                    except (TypeError, ValueError):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"concentracion_plazo_max: clave '{clave}' debe "
+                                "ser 'default' o un plazo entero."
+                            ),
+                        )
+            config["concentracion_plazo_max"] = nuevo
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "concentracion_plazo_max debe ser un número o un dict "
+                    "{'default': q, <plazo>: q_j}."
+                ),
+            )
 
     return config
 
@@ -377,13 +464,33 @@ def obtener_datos() -> dict[str, Any]:
         "todas_supuestas": info.get("todas_supuestas"),
     }
 
+    # Serialización de liquidez: cotas corto/largo (números) + reglas (lista).
+    liq = datos.liquidez or {}
+    liquidez_serial = {
+        k: _num_seguro(liq.get(k))
+        for k in ("L_corto", "U_corto", "L_largo", "U_largo")
+    }
+    liquidez_serial["reglas"] = [
+        {
+            "hasta_dias": int(r["hasta_dias"]),
+            "min_frac": _num_seguro(r.get("min_frac")),
+            "max_frac": _num_seguro(r.get("max_frac")),
+        }
+        for r in (liq.get("reglas", []) or [])
+    ]
+
+    # Concentración por plazo (diversificación). Claves int se pasan a str JSON.
+    cpm = datos.concentracion_plazo_max or {}
+    concentracion_plazo = {str(k): _num_seguro(v) for k, v in cpm.items()}
+
     return {
         "A": _num_seguro(datos.A),
         "bancos": datos.bancos,
         "plazos": datos.plazos,
         "tramos": tramos,
         "concentracion_max": {b: _num_seguro(v) for b, v in datos.p.items()},
-        "liquidez": {k: _num_seguro(v) for k, v in datos.liquidez.items()},
+        "liquidez": liquidez_serial,
+        "concentracion_plazo_max": concentracion_plazo,
         "info": resumen_info,
     }
 

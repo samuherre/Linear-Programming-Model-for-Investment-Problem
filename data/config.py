@@ -50,18 +50,56 @@ CONCENTRACION_MAX = {
 }
 
 # ---------------------------------------------------------------------------
-# Cotas de liquidez (política de tesorería) — fracciones de A
+# Liquidez por fechas (política de tesorería) — reglas por umbral de plazo
 # ---------------------------------------------------------------------------
-# Partición de plazos: corto = {j <= 180}, largo = {j > 180}.
-#   L_corto <= (capital en plazos cortos) / A <= U_corto
-#   L_largo <= (capital en plazos largos) / A <= U_largo
-# None  =>  cota DESACTIVADA (equivale a 0 para las inferiores y 1 para las
-# superiores). NO inventar porcentajes: dejar en None hasta fijar la política.
+# Esta es la respuesta a la retroalimentación de la profesora: el inversionista
+# necesita poder disponer de parte del capital en una FECHA intermedia (p. ej. a
+# los 6 meses) sin que el modelo inmovilice todo el dinero en el plazo más
+# rentable (720 d). Como el modelo no es multiperiodo, "tener liquidez a los D
+# días" se traduce en: una fracción del capital debe colocarse en CDT que
+# vencen en <= D días (así ese dinero está disponible en esa fecha).
+#
+# Cada regla restringe la fracción del capital colocada en CDT con plazo <= D:
+#       min_frac * A  <=  (capital en plazos j <= hasta_dias)  <=  max_frac * A
+# donde:
+#   hasta_dias : umbral de plazo en días (debe estar en PLAZOS_VALIDOS o ser un
+#                entero positivo). Agrupa todos los CDT que vencen en <= D días.
+#   min_frac   : fracción mínima del capital que debe vencer en <= D días
+#                (None = sin cota inferior, equivale a 0).
+#   max_frac   : fracción máxima del capital que puede quedar en <= D días
+#                (None = sin cota superior, equivale a 1).
+#
+# Escenario base (política editable del equipo):
+#   - Al menos 30% del capital vence en <= 180 días  -> liquidez a 6 meses.
+#   - A lo sumo 40% del capital queda en plazos > 360 días: se expresa como
+#     "al menos 60% vence en <= 360 días" (hasta_dias=360, min_frac=0.60),
+#     que es la formulación lineal equivalente sobre la partición <= D.
 LIQUIDEZ = {
+    "reglas": [
+        {"hasta_dias": 180, "min_frac": 0.30, "max_frac": None},
+        {"hasta_dias": 360, "min_frac": 0.60, "max_frac": None},
+    ],
+    # Compatibilidad hacia atrás: las 4 cotas corto/largo siguen aceptándose.
+    # Partición corto = {j <= 180}, largo = {j > 180}. None = cota desactivada.
+    # Se dejan en None; la política activa vive en "reglas".
     "L_corto": None,
     "U_corto": None,
     "L_largo": None,
     "U_largo": None,
+}
+
+# ---------------------------------------------------------------------------
+# Concentración máxima por plazo (q_j), fracción de A en (0, 1]
+# ---------------------------------------------------------------------------
+# Diversificación por PLAZO (segunda parte de la retroalimentación): evita que
+# todo el capital quede en un único plazo (p. ej. todo a 720 d). Para cada
+# plazo j con alguna combinación utilizable se impone:
+#       Σ_{i,k} x_ijk  <=  q_j * A
+# Una sola cota global (clave "default") aplica a todos los plazos; se puede
+# afinar por plazo específico con claves enteras, p. ej. {720: 0.30}.
+# None / dict vacío  =>  restricción DESACTIVADA (no se inventa diversificación).
+CONCENTRACION_PLAZO_MAX = {
+    "default": 0.40,   # ningún plazo único puede concentrar más del 40% de A
 }
 
 
@@ -73,7 +111,11 @@ def get_config() -> dict:
             "A": int,
             "tramos": {k: (L_k, U_k)},
             "concentracion_max": {banco: p_i},
-            "liquidez": {"L_corto": .., "U_corto": .., "L_largo": .., "U_largo": ..},
+            "liquidez": {
+                "reglas": [{"hasta_dias": D, "min_frac": .., "max_frac": ..}, ...],
+                "L_corto": .., "U_corto": .., "L_largo": .., "U_largo": ..,
+            },
+            "concentracion_plazo_max": {"default": q, <plazo>: q_j, ...},
         }
     """
     return {
@@ -81,4 +123,5 @@ def get_config() -> dict:
         "tramos": TRAMOS,
         "concentracion_max": CONCENTRACION_MAX,
         "liquidez": LIQUIDEZ,
+        "concentracion_plazo_max": CONCENTRACION_PLAZO_MAX,
     }
