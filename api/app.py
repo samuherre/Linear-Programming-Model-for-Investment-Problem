@@ -67,9 +67,11 @@ from sensitivity import (  # noqa: E402
 # Configuración escalar del proyecto (data/config.py::get_config()).
 import config as config_modulo  # noqa: E402
 
-from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi import FastAPI, HTTPException, Request  # noqa: E402
+from fastapi.exceptions import RequestValidationError  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from pydantic import BaseModel, Field  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+from pydantic import BaseModel, Field, field_validator, model_validator  # noqa: E402
 
 
 # Texto de advertencia del Requisito 4.7: la sensibilidad/dualidad aplica al LP
@@ -146,20 +148,129 @@ def _texto_a_clave(texto: str) -> tuple[str, int, int]:
 # Modelos Pydantic (contratos de request / response documentados en /docs)
 # ===========================================================================
 class CotasLiquidez(BaseModel):
-    """Cotas de liquidez corto/largo plazo (fracciones de A o null = desactivada)."""
+    """Cotas de liquidez: cuánto del capital debe ir a corto vs largo plazo.
+
+    ¿Qué controlan estos campos?
+    ----------------------------
+    El modelo reparte el capital entre CDT de **corto plazo** (vencimiento
+    ≤180 días, dinero que recuperas pronto) y de **largo plazo** (>180 días,
+    queda amarrado más tiempo pero suele rendir más). Estas cuatro cotas te
+    dejan EXIGIR qué fracción del capital va a cada grupo:
+
+      - `L_corto` / `U_corto`: mínimo y máximo que puede ir a CORTO plazo.
+      - `L_largo` / `U_largo`: mínimo y máximo que puede ir a LARGO plazo.
+
+    Escala: FRACCIÓN del capital, entre 0 y 1 (NO porcentaje).
+    ---------------------------------------------------------
+      - 0.20  = 20% del capital      0.60 = 60%      1.0 = 100%
+      - Para "20% a 60% a corto plazo": L_corto=0.20, U_corto=0.60.
+      - Un campo en `null` (o ausente) = esa cota está DESACTIVADA (el modelo
+        decide libremente). Si no quieres exigir liquidez, deja los cuatro en
+        null y el optimizador reparte solo para maximizar el rendimiento.
+
+    Reglas que se validan ANTES de resolver (si no se cumplen, HTTP 400):
+      1. Cada valor debe estar en el rango [0, 1] (o ser null).
+      2. El mínimo no puede superar al máximo del mismo grupo: L_corto ≤ U_corto
+         y L_largo ≤ U_largo.
+    """
 
     L_corto: Optional[float] = Field(
-        default=None, description="Fracción mínima de A en plazos ≤180 días (0..1) o null."
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "Fracción MÍNIMA del capital en plazos ≤180 días. Valor entre 0 y 1 "
+            "(p. ej. 0.20 = 20%) o null = sin exigencia."
+        ),
     )
     U_corto: Optional[float] = Field(
-        default=None, description="Fracción máxima de A en plazos ≤180 días (0..1) o null."
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "Fracción MÁXIMA del capital en plazos ≤180 días. Valor entre 0 y 1 "
+            "(p. ej. 0.60 = 60%) o null = sin tope. Debe ser ≥ L_corto."
+        ),
     )
     L_largo: Optional[float] = Field(
-        default=None, description="Fracción mínima de A en plazos >180 días (0..1) o null."
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "Fracción MÍNIMA del capital en plazos >180 días. Valor entre 0 y 1 "
+            "o null = sin exigencia."
+        ),
     )
     U_largo: Optional[float] = Field(
-        default=None, description="Fracción máxima de A en plazos >180 días (0..1) o null."
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "Fracción MÁXIMA del capital en plazos >180 días. Valor entre 0 y 1 "
+            "o null = sin tope. Debe ser ≥ L_largo."
+        ),
     )
+
+    @field_validator("L_corto", "U_corto", "L_largo", "U_largo", mode="before")
+    @classmethod
+    def _rechazar_escala_porcentaje(cls, valor: Any, info: Any) -> Any:
+        """Detecta el error típico de enviar porcentaje (p. ej. 60) en vez de 0.60.
+
+        Da un mensaje accionable en vez del críptico "fuera de rango", que es la
+        causa más común de confusión (el front rotula "%", pero aquí van
+        fracciones 0–1).
+        """
+        if valor is None:
+            return valor
+        try:
+            numero = float(valor)
+        except (TypeError, ValueError):
+            # Deja que la validación estándar de tipo de Pydantic lo reporte.
+            return valor
+        if numero > 1:
+            raise ValueError(
+                f"'{info.field_name}'={numero} parece un PORCENTAJE. Este campo "
+                f"usa FRACCIÓN del capital entre 0 y 1: use {numero / 100:g} "
+                f"para {numero:g}% (p. ej. 0.60 = 60%)."
+            )
+        if numero < 0:
+            raise ValueError(
+                f"'{info.field_name}'={numero} no puede ser negativo. Use una "
+                "fracción entre 0 y 1, o null para desactivar la cota."
+            )
+        return valor
+
+    @model_validator(mode="after")
+    def _validar_min_menor_que_max(self) -> "CotasLiquidez":
+        """Exige L ≤ U en cada grupo (corto y largo) antes de llegar al solver.
+
+        Captura el caso imposible "mínimo mayor que máximo" (p. ej. L_corto=0.60
+        con U_corto=0.20) con un mensaje claro, en vez de un error de infactibilidad
+        difícil de interpretar.
+        """
+        if (
+            self.L_corto is not None
+            and self.U_corto is not None
+            and self.L_corto > self.U_corto
+        ):
+            raise ValueError(
+                f"Liquidez a corto plazo incoherente: el mínimo L_corto="
+                f"{self.L_corto:g} no puede ser mayor que el máximo U_corto="
+                f"{self.U_corto:g}. Invierta los valores o ajústelos "
+                f"(ejemplo válido: L_corto=0.20, U_corto=0.60)."
+            )
+        if (
+            self.L_largo is not None
+            and self.U_largo is not None
+            and self.L_largo > self.U_largo
+        ):
+            raise ValueError(
+                f"Liquidez a largo plazo incoherente: el mínimo L_largo="
+                f"{self.L_largo:g} no puede ser mayor que el máximo U_largo="
+                f"{self.U_largo:g}. Invierta los valores o ajústelos "
+                f"(ejemplo válido: L_largo=0.40, U_largo=1.0)."
+            )
+        return self
 
 
 class ReglaLiquidez(BaseModel):
@@ -248,6 +359,137 @@ class OptimizarRequest(BaseModel):
     }
 
 
+class EscenarioLiquidez(BaseModel):
+    """Un escenario del barrido de liquidez (cota corto plazo, ≤180 días).
+
+    Misma escala y reglas que `CotasLiquidez`: los valores son FRACCIÓN del
+    capital entre 0 y 1 (no porcentaje) y `L_corto` no puede superar a `U_corto`.
+    Fijar `L_corto = U_corto` ANCLA un monto exacto en el bucket corto.
+    """
+
+    etiqueta: Optional[str] = Field(
+        default=None,
+        description="Nombre legible del escenario (p. ej. '2M a corto (20%)').",
+    )
+    L_corto: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "Fracción MÍNIMA del capital en plazos ≤180 días. Entre 0 y 1 "
+            "(p. ej. 0.20 = 20%) o null = sin cota."
+        ),
+    )
+    U_corto: Optional[float] = Field(
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "Fracción MÁXIMA del capital en plazos ≤180 días. Entre 0 y 1 o "
+            "null = sin cota. Debe ser ≥ L_corto."
+        ),
+    )
+
+    @field_validator("L_corto", "U_corto", mode="before")
+    @classmethod
+    def _rechazar_escala_porcentaje(cls, valor: Any, info: Any) -> Any:
+        """Igual que en CotasLiquidez: detecta porcentaje (>1) o valor negativo."""
+        if valor is None:
+            return valor
+        try:
+            numero = float(valor)
+        except (TypeError, ValueError):
+            return valor
+        if numero > 1:
+            raise ValueError(
+                f"'{info.field_name}'={numero} parece un PORCENTAJE. Use "
+                f"FRACCIÓN entre 0 y 1: {numero / 100:g} para {numero:g}%."
+            )
+        if numero < 0:
+            raise ValueError(
+                f"'{info.field_name}'={numero} no puede ser negativo "
+                "(use 0..1 o null)."
+            )
+        return valor
+
+    @model_validator(mode="after")
+    def _validar_min_menor_que_max(self) -> "EscenarioLiquidez":
+        """Exige L_corto ≤ U_corto en el escenario."""
+        if (
+            self.L_corto is not None
+            and self.U_corto is not None
+            and self.L_corto > self.U_corto
+        ):
+            etiqueta = f" ('{self.etiqueta}')" if self.etiqueta else ""
+            raise ValueError(
+                f"Escenario de liquidez{etiqueta} incoherente: el mínimo "
+                f"L_corto={self.L_corto:g} no puede superar al máximo "
+                f"U_corto={self.U_corto:g}."
+            )
+        return self
+
+
+class SimularLiquidezRequest(BaseModel):
+    """Parámetros del barrido de liquidez ("escalera" de CDT).
+
+    Resuelve el MILP una vez por cada escenario de liquidez y compara la
+    ganancia (Z*) frente a un escenario de referencia SIN exigencia de liquidez,
+    cuantificando el costo de oportunidad de mantener capital disponible a corto
+    plazo. Replica el ejemplo `examples/simulacion_liquidez.py` vía HTTP.
+    """
+
+    A: Optional[float] = Field(
+        default=None, gt=0, description="Capital total. Por defecto, el de config."
+    )
+    concentracion_max: Optional[Any] = Field(
+        default=None,
+        description="Concentración máxima por banco: float (aplica a todos) o dict {banco: fracción}.",
+    )
+    archivo_datos: Optional[str] = Field(
+        default=None,
+        description=(
+            "Archivo de datos a usar (dentro de data/). Por defecto el del "
+            "proyecto. Para tasas completas por (i,j,k) use 'escenario_supuesto.csv'."
+        ),
+    )
+    escenarios: Optional[list[EscenarioLiquidez]] = Field(
+        default=None,
+        description=(
+            "Lista de escenarios de liquidez a comparar. Si se omite, se usa un "
+            "barrido por defecto: libre, 10%, 20%, 30% y 40% a corto plazo."
+        ),
+    )
+
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {},
+                {
+                    "A": 10000000,
+                    "concentracion_max": 0.40,
+                    "archivo_datos": "escenario_supuesto.csv",
+                    "escenarios": [
+                        {"etiqueta": "Libre", "L_corto": None, "U_corto": None},
+                        {"etiqueta": "2M a corto (20%)", "L_corto": 0.20, "U_corto": 0.20},
+                        {"etiqueta": "4M a corto (40%)", "L_corto": 0.40, "U_corto": 0.40},
+                    ],
+                },
+            ]
+        }
+    }
+
+
+# Barrido por defecto del endpoint de liquidez: (etiqueta, L_corto, U_corto).
+# Fijar L=U ancla un monto exacto en el bucket corto (≤180 días).
+_BARRIDO_LIQUIDEZ_DEFECTO = [
+    ("Libre (sin exigencia de liquidez)", None, None),
+    ("10% a corto", 0.10, 0.10),
+    ("20% a corto", 0.20, 0.20),
+    ("30% a corto", 0.30, 0.30),
+    ("40% a corto", 0.40, 0.40),
+]
+
+
 # ===========================================================================
 # Aplicación FastAPI + CORS
 # ===========================================================================
@@ -271,6 +513,73 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ===========================================================================
+# Manejo uniforme de errores: mensajes claros y accionables para el front
+# ===========================================================================
+def _ubicacion_legible(loc: tuple) -> str:
+    """Traduce la ruta técnica del error (`loc` de Pydantic) a texto legible.
+
+    Pydantic reporta `loc` como ('body', 'liquidez', 'U_corto'); aquí lo
+    convertimos a "liquidez → U_corto", omitiendo el prefijo técnico 'body'
+    para que el usuario vea el campo que falló.
+    """
+    partes = [str(p) for p in loc if p not in ("body", "__root__")]
+    return " → ".join(partes) if partes else "(cuerpo de la petición)"
+
+
+@app.exception_handler(RequestValidationError)
+async def _handler_validacion(request: Request, exc: RequestValidationError):
+    """Aplana los errores de validación (422) en un mensaje claro.
+
+    FastAPI devuelve por defecto una lista anidada difícil de mostrar en un
+    front. Este handler la convierte en:
+      - `mensaje`: una o varias frases legibles (campo + motivo), listas para
+        mostrarse tal cual al usuario.
+      - `errores`: el detalle estructurado por si el front quiere resaltar
+        campos concretos.
+    Así, el caso típico (poner 60 en vez de 0.60, o un mínimo mayor que el
+    máximo) llega al usuario con una explicación entendible, no con jerga.
+    """
+    mensajes: list[str] = []
+    detalles: list[dict[str, Any]] = []
+    for err in exc.errors():
+        campo = _ubicacion_legible(err.get("loc", ()))
+        motivo = err.get("msg", "valor inválido")
+        # Pydantic antepone "Value error, " a los ValueError de nuestros
+        # validadores; lo quitamos para que el mensaje quede limpio.
+        motivo = motivo.replace("Value error, ", "")
+        mensajes.append(f"{campo}: {motivo}")
+        detalles.append({"campo": campo, "motivo": motivo})
+
+    return JSONResponse(
+        status_code=422,
+        content={
+            "ok": False,
+            "error": "datos_invalidos",
+            "mensaje": " | ".join(mensajes),
+            "errores": detalles,
+        },
+    )
+
+
+@app.exception_handler(HTTPException)
+async def _handler_http(request: Request, exc: HTTPException):
+    """Da forma uniforme a los errores HTTP lanzados a propósito (p. ej. 400).
+
+    Mantiene el `status_code` original pero envuelve el `detail` en el mismo
+    sobre `{ok, error, mensaje}` que usa el resto de la API, para que el front
+    siempre pueda leer `mensaje` sin importar el tipo de error.
+    """
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "ok": False,
+            "error": "peticion_invalida" if exc.status_code == 400 else "error_http",
+            "mensaje": exc.detail,
+        },
+    )
 
 
 # ===========================================================================
@@ -681,5 +990,176 @@ def optimizar(req: OptimizarRequest) -> dict[str, Any]:
         "precios_sombra": precios_sombra,
         "holgura_complementaria": holgura_complementaria,
         "rangos": rangos_serial,
+        "advertencia_lp_restringido": ADVERTENCIA_LP_RESTRINGIDO,
+    }
+
+
+# ===========================================================================
+# Simulación de liquidez (escalera de CDT): barrido corto vs rendimiento
+# ===========================================================================
+def _concentracion_override(base_conc: dict, concentracion_max: Any) -> dict:
+    """Resuelve el override de concentración (float global o dict por banco).
+
+    Reutiliza la misma semántica de `_construir_config_override`: un float
+    aplica a todos los bancos; un dict sobrescribe los bancos indicados.
+    """
+    if concentracion_max is None:
+        return dict(base_conc)
+    if isinstance(concentracion_max, (int, float)):
+        return {banco: float(concentracion_max) for banco in base_conc}
+    if isinstance(concentracion_max, dict):
+        nuevo = dict(base_conc)
+        for banco, valor in concentracion_max.items():
+            if banco not in nuevo:
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Banco '{banco}' en concentracion_max no pertenece al "
+                        f"conjunto de bancos: {sorted(nuevo)}."
+                    ),
+                )
+            nuevo[banco] = float(valor)
+        return nuevo
+    raise HTTPException(
+        status_code=400,
+        detail="concentracion_max debe ser un número o un dict {banco: fracción}.",
+    )
+
+
+@app.post(
+    "/simular-liquidez",
+    summary="Barrido de liquidez (escalera de CDT): costo de oportunidad corto vs largo",
+)
+def simular_liquidez(req: SimularLiquidezRequest) -> dict[str, Any]:
+    """Resuelve el MILP para varios niveles de liquidez y los compara.
+
+    Caso de uso ("escalera" de CDT): el inversionista quiere mantener parte del
+    capital disponible a corto plazo (≤180 días) y colocar el resto a plazos
+    largos, que rinden más por periodo. Este endpoint barre varios niveles de
+    exigencia de liquidez a corto (`L_corto`/`U_corto`) y, para cada uno, resuelve
+    el modelo y reporta la ganancia `Z*`, el reparto corto/largo y el **costo de
+    oportunidad** frente al primer escenario (referencia, normalmente "Libre").
+
+    Reusa íntegramente el pipeline de `src/` (mismo modelo que `/optimizar`); solo
+    cambia la cota de liquidez entre escenarios. Si se omiten `escenarios`, usa un
+    barrido por defecto (libre, 10%, 20%, 30%, 40% a corto).
+
+    Respuesta: `A`, `concentracion_max` efectiva, lista `escenarios` (cada uno con
+    etiqueta, cotas, estado, `objetivo`/Z*, rendimiento efectivo %, montos corto y
+    largo, nº de CDT y `costo_oportunidad` vs la referencia) y la advertencia de LP
+    restringido. Si algún escenario no es óptimo, ese elemento trae `ok=false` con
+    su estado; los demás se resuelven igual.
+    """
+    base = config_modulo.get_config()
+
+    # Config común (capital y concentración) para todos los escenarios.
+    A = float(req.A) if req.A is not None else float(base["A"])
+    concentracion = _concentracion_override(base["concentracion_max"], req.concentracion_max)
+    archivo_datos = req.archivo_datos  # None => archivo por defecto del proyecto
+
+    # Escenarios a barrer: los del request o el barrido por defecto.
+    if req.escenarios:
+        escenarios = [
+            (e.etiqueta or f"L={e.L_corto}/U={e.U_corto}", e.L_corto, e.U_corto)
+            for e in req.escenarios
+        ]
+    else:
+        escenarios = list(_BARRIDO_LIQUIDEZ_DEFECTO)
+
+    resultados: list[dict[str, Any]] = []
+    z_referencia: Optional[float] = None  # Z* del primer escenario óptimo.
+
+    for etiqueta, l_corto, u_corto in escenarios:
+        config = {
+            "A": A,
+            "tramos": base["tramos"],
+            "concentracion_max": dict(concentracion),
+            "liquidez": {
+                "L_corto": l_corto,
+                "U_corto": u_corto,
+                "L_largo": None,
+                "U_largo": None,
+            },
+        }
+
+        try:
+            datos = cargar_datos(archivo_datos=archivo_datos, config=config)
+        except DataLoaderError as err:
+            raise HTTPException(status_code=400, detail=str(err))
+
+        if not datos.combinaciones:
+            resultados.append(
+                {
+                    "etiqueta": etiqueta,
+                    "L_corto": l_corto,
+                    "U_corto": u_corto,
+                    "ok": False,
+                    "estado": "SinCombinaciones",
+                    "mensaje": (
+                        "No hay combinaciones utilizables (tasas vacías). Use "
+                        "archivo_datos='escenario_supuesto.csv' o cargue tasas."
+                    ),
+                }
+            )
+            continue
+
+        modelo = construir_modelo(datos)
+        agregar_restricciones_tramos(modelo)
+        agregar_restricciones_riesgo(modelo)
+        resultado = resolver(modelo)
+
+        if not resultado.es_optimo:
+            resultados.append(
+                {
+                    "etiqueta": etiqueta,
+                    "L_corto": l_corto,
+                    "U_corto": u_corto,
+                    "ok": False,
+                    "estado": resultado.estado,
+                    "mensaje": (
+                        "Escenario infactible/no óptimo: la exigencia de liquidez "
+                        "puede ser incompatible con la concentración por banco."
+                    ),
+                }
+            )
+            continue
+
+        # Reparto corto (≤180) vs largo (>180) y nº de CDT activos.
+        corto = sum(v for c, v in resultado.x.items() if c[1] <= 180)
+        largo = sum(v for c, v in resultado.x.items() if c[1] > 180)
+        rend_efectivo = (resultado.objetivo / A * 100.0) if (resultado.objetivo and A) else None
+
+        # El primer escenario óptimo fija la referencia para el costo de oportunidad.
+        if z_referencia is None and resultado.objetivo is not None:
+            z_referencia = resultado.objetivo
+        costo_oportunidad = (
+            _num_seguro(z_referencia - resultado.objetivo)
+            if (z_referencia is not None and resultado.objetivo is not None)
+            else None
+        )
+
+        resultados.append(
+            {
+                "etiqueta": etiqueta,
+                "L_corto": l_corto,
+                "U_corto": u_corto,
+                "ok": True,
+                "estado": resultado.estado,
+                "objetivo": _num_seguro(resultado.objetivo),
+                "rendimiento_efectivo_pct": _num_seguro(rend_efectivo),
+                "monto_corto": _num_seguro(corto),
+                "monto_largo": _num_seguro(largo),
+                "num_cdt": len(resultado.x),
+                "costo_oportunidad": costo_oportunidad,
+            }
+        )
+
+    return {
+        "ok": True,
+        "A": _num_seguro(A),
+        "concentracion_max": {b: _num_seguro(v) for b, v in concentracion.items()},
+        "archivo_datos": archivo_datos or "(por defecto del proyecto)",
+        "referencia": "primer escenario (costo_oportunidad = Z*_ref − Z*_escenario)",
+        "escenarios": resultados,
         "advertencia_lp_restringido": ADVERTENCIA_LP_RESTRINGIDO,
     }
