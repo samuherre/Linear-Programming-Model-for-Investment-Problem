@@ -1,6 +1,6 @@
 # Informe de dualidad y análisis de sensibilidad
 
-_Generado: 2026-11-02 17:49:44_
+_Generado: 2026-11-03 16:39:02_
 
 > **ADVERTENCIA (Requisito 4.7).** Todo el análisis de este
 > informe —precios sombra, interpretación económica, rangos de
