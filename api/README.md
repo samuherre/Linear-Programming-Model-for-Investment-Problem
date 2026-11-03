@@ -145,6 +145,44 @@ modelo: se responde de inmediato con un mensaje claro):
    `L_largo ≤ U_largo`. Pedir "mínimo 60 % y máximo 20 %" es imposible y se
    rechaza con una explicación.
 
+### `liquidez_reglas` — liquidez por fecha (escalera de CDT)
+
+Además de las cotas corto/largo, `/optimizar` acepta **reglas de liquidez por
+fecha**: en vez de un corte fijo en 180 días, defines uno o más umbrales de plazo
+y exiges qué fracción del capital debe vencer antes de cada umbral. Así puedes
+pedir, por ejemplo, "necesito el 30 % disponible a los 6 meses" sin forzar que
+todos los CDT compartan plazo.
+
+```jsonc
+"liquidez_reglas": [
+  { "hasta_dias": 180, "min_frac": 0.30, "max_frac": null },  // ≥30% vence en ≤180 días
+  { "hasta_dias": 360, "min_frac": 0.60, "max_frac": null }   // ≥60% vence en ≤360 días
+]
+```
+
+| Campo       | Significado                                                       |
+|-------------|-------------------------------------------------------------------|
+| `hasta_dias`| Umbral de plazo en días. Agrupa los CDT que vencen en ≤ ese valor. |
+| `min_frac`  | Fracción mínima del capital que debe vencer en ≤ `hasta_dias` (0..1 o null). |
+| `max_frac`  | Fracción máxima que puede quedar en ≤ `hasta_dias` (0..1 o null).  |
+
+- Misma escala y validación que las cotas corto/largo (fracción `[0, 1]`, no porcentaje; `min_frac ≤ max_frac`).
+- `liquidez_reglas: []` **desactiva** la liquidez por fecha; omitir el campo (`null`) usa las reglas de `config.py`.
+
+### `concentracion_plazo_max` — diversificación por plazo
+
+Tope máximo de capital en un mismo plazo, para no concentrar todo en el horizonte
+más rentable:
+
+```jsonc
+"concentracion_plazo_max": 0.40            // un float: ≤40% de A por cada plazo
+// o afinado por plazo:
+"concentracion_plazo_max": { "default": 0.40, "720": 0.30 }
+```
+
+- Un `float` aplica a todos los plazos; un `dict` con clave `"default"` y/o plazos concretos lo afina.
+- `concentracion_plazo_max: {}` **desactiva** el tope por plazo.
+
 ### Formato de errores (uniforme para el front)
 
 Todos los errores devuelven el **mismo sobre JSON**, así el front solo necesita
