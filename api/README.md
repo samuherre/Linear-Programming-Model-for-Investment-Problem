@@ -114,6 +114,62 @@ Notas de diseño:
   `"Banco|plazo|tramo"`. Los valores `inf`/`-inf`/`NaN` (p. ej. `U_3 = ∞` o
   rangos no acotados) se serializan como `null`.
 
+### Qué son los campos de `liquidez` (y cómo evitar errores)
+
+El modelo separa los CDT en **corto plazo** (vencimiento ≤180 días, dinero que
+recuperas pronto) y **largo plazo** (>180 días, queda amarrado más tiempo pero
+suele rendir más). Las cuatro cotas te dejan **exigir** qué fracción del capital
+va a cada grupo:
+
+| Campo      | Significado                                              |
+|------------|----------------------------------------------------------|
+| `L_corto`  | Mínimo del capital en plazos ≤180 días.                  |
+| `U_corto`  | Máximo del capital en plazos ≤180 días.                  |
+| `L_largo`  | Mínimo del capital en plazos >180 días.                  |
+| `U_largo`  | Máximo del capital en plazos >180 días.                  |
+
+**Escala: FRACCIÓN del capital entre 0 y 1, NO porcentaje.**
+
+- `0.20` = 20 %, `0.60` = 60 %, `1.0` = 100 %.
+- Para "entre 20 % y 60 % a corto plazo": `L_corto = 0.20`, `U_corto = 0.60`.
+- Un campo en `null` (o ausente) = esa cota está **desactivada**. Si no quieres
+  exigir liquidez, deja los cuatro en `null` y el optimizador reparte solo para
+  maximizar el rendimiento.
+
+**Dos reglas que se validan ANTES de resolver** (si fallan, no se ejecuta el
+modelo: se responde de inmediato con un mensaje claro):
+
+1. Cada valor debe estar en `[0, 1]` (o ser `null`). Enviar `60` en vez de
+   `0.60` se detecta y se explica ("parece un PORCENTAJE").
+2. El mínimo no puede superar al máximo del mismo grupo: `L_corto ≤ U_corto` y
+   `L_largo ≤ U_largo`. Pedir "mínimo 60 % y máximo 20 %" es imposible y se
+   rechaza con una explicación.
+
+### Formato de errores (uniforme para el front)
+
+Todos los errores devuelven el **mismo sobre JSON**, así el front solo necesita
+leer `mensaje` para mostrárselo al usuario:
+
+```jsonc
+{
+  "ok": false,
+  "error": "datos_invalidos",            // o "peticion_invalida", "error_http"
+  "mensaje": "liquidez → U_corto: 'U_corto'=20 parece un PORCENTAJE. Use 0.2 para 20%.",
+  "errores": [                            // detalle por campo (solo en validación)
+    { "campo": "liquidez → U_corto", "motivo": "..." }
+  ]
+}
+```
+
+- **422** `datos_invalidos`: la petición no pasó la validación de formato
+  (escala fuera de `[0,1]`, `L > U`, tipo incorrecto). Incluye `errores[]` con
+  el campo y el motivo de cada fallo.
+- **400** `peticion_invalida`: la petición es válida en formato pero
+  incoherente con los datos (p. ej. un banco que no existe, una tasa override
+  de una combinación no utilizable).
+- **200** `ok: false`: el modelo corrió pero no hay solución óptima o no hay
+  combinaciones; trae un `mensaje` accionable.
+
 ### Respuesta resumida de `POST /optimizar` con `{}` (escenario base)
 
 ```jsonc

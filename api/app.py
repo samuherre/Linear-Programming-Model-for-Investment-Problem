@@ -67,9 +67,11 @@ from sensitivity import (  # noqa: E402
 # Configuración escalar del proyecto (data/config.py::get_config()).
 import config as config_modulo  # noqa: E402
 
-from fastapi import FastAPI, HTTPException  # noqa: E402
+from fastapi import FastAPI, HTTPException, Request  # noqa: E402
+from fastapi.exceptions import RequestValidationError  # noqa: E402
 from fastapi.middleware.cors import CORSMiddleware  # noqa: E402
-from pydantic import BaseModel, Field  # noqa: E402
+from fastapi.responses import JSONResponse  # noqa: E402
+from pydantic import BaseModel, Field, field_validator, model_validator  # noqa: E402
 
 
 # Texto de advertencia del Requisito 4.7: la sensibilidad/dualidad aplica al LP
@@ -146,20 +148,129 @@ def _texto_a_clave(texto: str) -> tuple[str, int, int]:
 # Modelos Pydantic (contratos de request / response documentados en /docs)
 # ===========================================================================
 class CotasLiquidez(BaseModel):
-    """Cotas de liquidez corto/largo plazo (fracciones de A o null = desactivada)."""
+    """Cotas de liquidez: cuánto del capital debe ir a corto vs largo plazo.
+
+    ¿Qué controlan estos campos?
+    ----------------------------
+    El modelo reparte el capital entre CDT de **corto plazo** (vencimiento
+    ≤180 días, dinero que recuperas pronto) y de **largo plazo** (>180 días,
+    queda amarrado más tiempo pero suele rendir más). Estas cuatro cotas te
+    dejan EXIGIR qué fracción del capital va a cada grupo:
+
+      - `L_corto` / `U_corto`: mínimo y máximo que puede ir a CORTO plazo.
+      - `L_largo` / `U_largo`: mínimo y máximo que puede ir a LARGO plazo.
+
+    Escala: FRACCIÓN del capital, entre 0 y 1 (NO porcentaje).
+    ---------------------------------------------------------
+      - 0.20  = 20% del capital      0.60 = 60%      1.0 = 100%
+      - Para "20% a 60% a corto plazo": L_corto=0.20, U_corto=0.60.
+      - Un campo en `null` (o ausente) = esa cota está DESACTIVADA (el modelo
+        decide libremente). Si no quieres exigir liquidez, deja los cuatro en
+        null y el optimizador reparte solo para maximizar el rendimiento.
+
+    Reglas que se validan ANTES de resolver (si no se cumplen, HTTP 400):
+      1. Cada valor debe estar en el rango [0, 1] (o ser null).
+      2. El mínimo no puede superar al máximo del mismo grupo: L_corto ≤ U_corto
+         y L_largo ≤ U_largo.
+    """
 
     L_corto: Optional[float] = Field(
-        default=None, description="Fracción mínima de A en plazos ≤180 días (0..1) o null."
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "Fracción MÍNIMA del capital en plazos ≤180 días. Valor entre 0 y 1 "
+            "(p. ej. 0.20 = 20%) o null = sin exigencia."
+        ),
     )
     U_corto: Optional[float] = Field(
-        default=None, description="Fracción máxima de A en plazos ≤180 días (0..1) o null."
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "Fracción MÁXIMA del capital en plazos ≤180 días. Valor entre 0 y 1 "
+            "(p. ej. 0.60 = 60%) o null = sin tope. Debe ser ≥ L_corto."
+        ),
     )
     L_largo: Optional[float] = Field(
-        default=None, description="Fracción mínima de A en plazos >180 días (0..1) o null."
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "Fracción MÍNIMA del capital en plazos >180 días. Valor entre 0 y 1 "
+            "o null = sin exigencia."
+        ),
     )
     U_largo: Optional[float] = Field(
-        default=None, description="Fracción máxima de A en plazos >180 días (0..1) o null."
+        default=None,
+        ge=0,
+        le=1,
+        description=(
+            "Fracción MÁXIMA del capital en plazos >180 días. Valor entre 0 y 1 "
+            "o null = sin tope. Debe ser ≥ L_largo."
+        ),
     )
+
+    @field_validator("L_corto", "U_corto", "L_largo", "U_largo", mode="before")
+    @classmethod
+    def _rechazar_escala_porcentaje(cls, valor: Any, info: Any) -> Any:
+        """Detecta el error típico de enviar porcentaje (p. ej. 60) en vez de 0.60.
+
+        Da un mensaje accionable en vez del críptico "fuera de rango", que es la
+        causa más común de confusión (el front rotula "%", pero aquí van
+        fracciones 0–1).
+        """
+        if valor is None:
+            return valor
+        try:
+            numero = float(valor)
+        except (TypeError, ValueError):
+            # Deja que la validación estándar de tipo de Pydantic lo reporte.
+            return valor
+        if numero > 1:
+            raise ValueError(
+                f"'{info.field_name}'={numero} parece un PORCENTAJE. Este campo "
+                f"usa FRACCIÓN del capital entre 0 y 1: use {numero / 100:g} "
+                f"para {numero:g}% (p. ej. 0.60 = 60%)."
+            )
+        if numero < 0:
+            raise ValueError(
+                f"'{info.field_name}'={numero} no puede ser negativo. Use una "
+                "fracción entre 0 y 1, o null para desactivar la cota."
+            )
+        return valor
+
+    @model_validator(mode="after")
+    def _validar_min_menor_que_max(self) -> "CotasLiquidez":
+        """Exige L ≤ U en cada grupo (corto y largo) antes de llegar al solver.
+
+        Captura el caso imposible "mínimo mayor que máximo" (p. ej. L_corto=0.60
+        con U_corto=0.20) con un mensaje claro, en vez de un error de infactibilidad
+        difícil de interpretar.
+        """
+        if (
+            self.L_corto is not None
+            and self.U_corto is not None
+            and self.L_corto > self.U_corto
+        ):
+            raise ValueError(
+                f"Liquidez a corto plazo incoherente: el mínimo L_corto="
+                f"{self.L_corto:g} no puede ser mayor que el máximo U_corto="
+                f"{self.U_corto:g}. Invierta los valores o ajústelos "
+                f"(ejemplo válido: L_corto=0.20, U_corto=0.60)."
+            )
+        if (
+            self.L_largo is not None
+            and self.U_largo is not None
+            and self.L_largo > self.U_largo
+        ):
+            raise ValueError(
+                f"Liquidez a largo plazo incoherente: el mínimo L_largo="
+                f"{self.L_largo:g} no puede ser mayor que el máximo U_largo="
+                f"{self.U_largo:g}. Invierta los valores o ajústelos "
+                f"(ejemplo válido: L_largo=0.40, U_largo=1.0)."
+            )
+        return self
 
 
 class OptimizarRequest(BaseModel):
@@ -208,7 +319,12 @@ class OptimizarRequest(BaseModel):
 
 
 class EscenarioLiquidez(BaseModel):
-    """Un escenario del barrido de liquidez (cota corto plazo, ≤180 días)."""
+    """Un escenario del barrido de liquidez (cota corto plazo, ≤180 días).
+
+    Misma escala y reglas que `CotasLiquidez`: los valores son FRACCIÓN del
+    capital entre 0 y 1 (no porcentaje) y `L_corto` no puede superar a `U_corto`.
+    Fijar `L_corto = U_corto` ANCLA un monto exacto en el bucket corto.
+    """
 
     etiqueta: Optional[str] = Field(
         default=None,
@@ -216,12 +332,60 @@ class EscenarioLiquidez(BaseModel):
     )
     L_corto: Optional[float] = Field(
         default=None,
-        description="Fracción MÍNIMA de A en plazos ≤180 días (0..1) o null = sin cota.",
+        ge=0,
+        le=1,
+        description=(
+            "Fracción MÍNIMA del capital en plazos ≤180 días. Entre 0 y 1 "
+            "(p. ej. 0.20 = 20%) o null = sin cota."
+        ),
     )
     U_corto: Optional[float] = Field(
         default=None,
-        description="Fracción MÁXIMA de A en plazos ≤180 días (0..1) o null = sin cota.",
+        ge=0,
+        le=1,
+        description=(
+            "Fracción MÁXIMA del capital en plazos ≤180 días. Entre 0 y 1 o "
+            "null = sin cota. Debe ser ≥ L_corto."
+        ),
     )
+
+    @field_validator("L_corto", "U_corto", mode="before")
+    @classmethod
+    def _rechazar_escala_porcentaje(cls, valor: Any, info: Any) -> Any:
+        """Igual que en CotasLiquidez: detecta porcentaje (>1) o valor negativo."""
+        if valor is None:
+            return valor
+        try:
+            numero = float(valor)
+        except (TypeError, ValueError):
+            return valor
+        if numero > 1:
+            raise ValueError(
+                f"'{info.field_name}'={numero} parece un PORCENTAJE. Use "
+                f"FRACCIÓN entre 0 y 1: {numero / 100:g} para {numero:g}%."
+            )
+        if numero < 0:
+            raise ValueError(
+                f"'{info.field_name}'={numero} no puede ser negativo "
+                "(use 0..1 o null)."
+            )
+        return valor
+
+    @model_validator(mode="after")
+    def _validar_min_menor_que_max(self) -> "EscenarioLiquidez":
+        """Exige L_corto ≤ U_corto en el escenario."""
+        if (
+            self.L_corto is not None
+            and self.U_corto is not None
+            and self.L_corto > self.U_corto
+        ):
+            etiqueta = f" ('{self.etiqueta}')" if self.etiqueta else ""
+            raise ValueError(
+                f"Escenario de liquidez{etiqueta} incoherente: el mínimo "
+                f"L_corto={self.L_corto:g} no puede superar al máximo "
+                f"U_corto={self.U_corto:g}."
+            )
+        return self
 
 
 class SimularLiquidezRequest(BaseModel):
@@ -308,6 +472,73 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# ===========================================================================
+# Manejo uniforme de errores: mensajes claros y accionables para el front
+# ===========================================================================
+def _ubicacion_legible(loc: tuple) -> str:
+    """Traduce la ruta técnica del error (`loc` de Pydantic) a texto legible.
+
+    Pydantic reporta `loc` como ('body', 'liquidez', 'U_corto'); aquí lo
+    convertimos a "liquidez → U_corto", omitiendo el prefijo técnico 'body'
+    para que el usuario vea el campo que falló.
+    """
+    partes = [str(p) for p in loc if p not in ("body", "__root__")]
+    return " → ".join(partes) if partes else "(cuerpo de la petición)"
+
+
+@app.exception_handler(RequestValidationError)
+async def _handler_validacion(request: Request, exc: RequestValidationError):
+    """Aplana los errores de validación (422) en un mensaje claro.
+
+    FastAPI devuelve por defecto una lista anidada difícil de mostrar en un
+    front. Este handler la convierte en:
+      - `mensaje`: una o varias frases legibles (campo + motivo), listas para
+        mostrarse tal cual al usuario.
+      - `errores`: el detalle estructurado por si el front quiere resaltar
+        campos concretos.
+    Así, el caso típico (poner 60 en vez de 0.60, o un mínimo mayor que el
+    máximo) llega al usuario con una explicación entendible, no con jerga.
+    """
+    mensajes: list[str] = []
+    detalles: list[dict[str, Any]] = []
+    for err in exc.errors():
+        campo = _ubicacion_legible(err.get("loc", ()))
+        motivo = err.get("msg", "valor inválido")
+        # Pydantic antepone "Value error, " a los ValueError de nuestros
+        # validadores; lo quitamos para que el mensaje quede limpio.
+        motivo = motivo.replace("Value error, ", "")
+        mensajes.append(f"{campo}: {motivo}")
+        detalles.append({"campo": campo, "motivo": motivo})
+
+    return JSONResponse(
+        status_code=422,
+        content={
+            "ok": False,
+            "error": "datos_invalidos",
+            "mensaje": " | ".join(mensajes),
+            "errores": detalles,
+        },
+    )
+
+
+@app.exception_handler(HTTPException)
+async def _handler_http(request: Request, exc: HTTPException):
+    """Da forma uniforme a los errores HTTP lanzados a propósito (p. ej. 400).
+
+    Mantiene el `status_code` original pero envuelve el `detail` en el mismo
+    sobre `{ok, error, mensaje}` que usa el resto de la API, para que el front
+    siempre pueda leer `mensaje` sin importar el tipo de error.
+    """
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "ok": False,
+            "error": "peticion_invalida" if exc.status_code == 400 else "error_http",
+            "mensaje": exc.detail,
+        },
+    )
 
 
 # ===========================================================================
