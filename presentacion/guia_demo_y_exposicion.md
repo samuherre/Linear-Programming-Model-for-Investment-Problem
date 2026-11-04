@@ -1,45 +1,40 @@
 # Guía de demo y exposición — Optimización de Inversión en CDT
 
 Documento de apoyo para la sustentación. Dos partes:
-1. **Guía de usuario + casos de prueba** para la demo interactiva.
+1. **Guía de la demo interactiva en la interfaz de Lovable** (pestañas Optimizador y Simulación de Liquidez), con casos de prueba listos.
 2. **Guion por diapositiva**: lo más importante a decir en cada slide.
 
 ---
 
-## Parte 1 — Guía de usuario y casos de prueba para la demo
+## Parte 1 — Demo interactiva en la interfaz web (Lovable)
 
-### 1.1 Preparación antes de exponer (hacer esto ANTES, no en vivo)
+La aplicación tiene dos pestañas en la parte superior: **Optimizador** y **Simulación de Liquidez**. Verifica que arriba a la derecha diga **"API conectada"** (punto verde) antes de empezar.
 
-Deja todo encendido y probado minutos antes de la presentación:
+> **Importante sobre los porcentajes:** en la interfaz, los valores de liquidez y concentración se escriben en **porcentaje** (ej. `30`, `40`, `60`), no en fracción. La app hace la conversión internamente.
 
-1. **Activar el entorno y levantar la API** (desde la raíz del proyecto):
-   ```powershell
-   .\.venv\Scripts\Activate.ps1
-   uvicorn api.app:app --port 8000
-   ```
-2. **Abrir la documentación interactiva** en el navegador:
-   `http://localhost:8000/docs`
-   Esta es la mejor pantalla para la demo: permite ejecutar los endpoints con el botón **"Try it out"** sin escribir código.
-3. (Opcional, si muestran el front de Lovable) Levantar **ngrok** y confirmar que la URL pública responde. Recuerda el header `ngrok-skip-browser-warning: true` en el front.
+### Preparación antes de exponer (hacerlo ANTES, no en vivo)
 
-> **Plan B si algo falla en vivo:** ten una pestaña con la salida de `python src/main.py` ya ejecutada, o capturas de los resultados. Nunca dependas al 100% de la red en una sustentación.
+1. Levantar la API local y ngrok (o el despliegue que uses) y confirmar que la web muestra **"API conectada"**.
+2. Abrir la pestaña **Optimizador** y verificar que el panel superior carga: Capital Base, 90 combinaciones utilizables, 90/0 reales/supuestas, los 5 bancos y las reglas de liquidez vigentes.
+3. **Plan B:** ten capturas de los resultados esperados (abajo) por si la red falla en vivo.
 
-### 1.2 Qué mostrar y en qué orden (recorrido de la demo, ~3-4 min)
+---
 
-1. **`GET /datos`** — muestra que el modelo carga datos reales: los 5 bancos, los 7 plazos, las reglas de liquidez por fecha y el tope por plazo. Sirve para decir "estos son datos reales, no inventados".
-2. **`GET /productos`** — la matriz de combinaciones utilizables con su tasa E.A. y factor `f_ijk`.
-3. **`POST /optimizar`** — el corazón de la demo. Ejecuta los casos de abajo.
-4. **`POST /simular-liquidez`** (opcional) — barrido automático que muestra el costo de oportunidad a varios niveles de liquidez en una sola llamada.
+### PESTAÑA 1 — "Optimizador"
 
-### 1.3 Casos de prueba (valores verificados con el modelo real)
+El panel superior muestra el contexto (solo lectura): capital base, combinaciones, bancos/plazos, liquidez por fecha vigente y tope por plazo. El panel izquierdo "Escenario" es donde se configura y se pulsa **Optimizar**; el resultado aparece a la derecha.
 
-Todos usan capital `A = 100.000.000` (valor por defecto). Para cada caso se da el **cuerpo JSON** a pegar en `/optimizar` → "Try it out", y el **resultado esperado** para que sepas qué va a salir.
+#### Caso 1 — Escenario base con liquidez por fecha ✅ (el principal)
 
-#### CASO A — Escenario base (con liquidez por fecha) ✅ el principal
+**Qué configurar en el panel "Escenario":**
+- **Capital (A) en COP:** `100000000` (o dejarlo como está).
+- **Limitar concentración por plazo:** ✅ activado → **Máximo (%):** `40`.
+- **Liquidez por fecha:** ✅ activado, con dos reglas:
+  - Regla 1: umbral **< 180 días**, **Mínimo (%):** `30`, Máximo: vacío.
+  - Pulsar **+ Agregar regla** → Regla 2: umbral **< 360 días**, **Mínimo (%):** `60`, Máximo: vacío.
+- Pulsar **Optimizar**.
 
-**Cuerpo:** `{}` (vacío, usa la política por defecto)
-
-**Resultado esperado:** `Estado: Optimal`, `Z* = 15.405.781 COP`, capital 100% colocado.
+**Resultado esperado:** `Óptimo`, **Z\* = $15.405.781**, 100% del capital colocado, repartido entre tres plazos:
 
 | Banco | Plazo | Monto | % |
 |---|---|---|---|
@@ -48,16 +43,17 @@ Todos usan capital `A = 100.000.000` (valor por defecto). Para cada caso se da e
 | Bancolombia | 360 d | $30.000.000 | 30 % |
 | Davivienda | 720 d | $40.000.000 | 40 % |
 
-**Qué decir:** "El capital se reparte entre tres plazos. Cumple exactamente las reglas de liquidez: 30 % vence en ≤180 días, 60 % en ≤360 días, y ningún plazo supera el 40 %."
+**Qué decir:** "El capital se reparte entre 180, 360 y 720 días. Cumple exactamente las reglas: 30% vence en ≤180 días, 60% en ≤360 días, y ningún plazo supera el 40%. El modelo no amarra todo al mismo plazo."
 
-#### CASO B — Sin exigir liquidez (contraste) 🔑 el más vendible
+#### Caso 2 — Sin exigir liquidez (contraste) 🔑 (el más vendible)
 
-**Cuerpo:**
-```json
-{ "liquidez_reglas": [], "concentracion_plazo_max": {} }
-```
+**Qué configurar:** partiendo del Caso 1,
+- **Desactivar** el checkbox **Liquidez por fecha** (quitar el ✅).
+- **Desactivar** el checkbox **Limitar concentración por plazo** (quitar el ✅).
+- Capital: `100000000`.
+- Pulsar **Optimizar**.
 
-**Resultado esperado:** `Z* = 24.832.032 COP`, con TODO el capital a 720 días:
+**Resultado esperado:** **Z\* = $24.832.032**, con TODO el capital a 720 días:
 
 | Banco | Plazo | % |
 |---|---|---|
@@ -65,89 +61,92 @@ Todos usan capital `A = 100.000.000` (valor por defecto). Para cada caso se da e
 | Bancolombia | 720 d | 40 % |
 | Davivienda | 720 d | 40 % |
 
-**Qué decir:** "Al quitar la exigencia de liquidez, el modelo pone todo en el plazo más rentable (720 días) y gana más: $24,8M. La diferencia con el caso base, **$9.426.250**, es el costo de oportunidad de mantener liquidez. Ese número es imposible de estimar 'a ojo'."
+**Qué decir:** "Al quitar la exigencia de liquidez, el modelo concentra todo en el plazo más rentable (720 días) y rinde $24,8M. La diferencia con el Caso 1, **$9.426.250**, es el costo de oportunidad de mantener liquidez. Ese número es imposible de estimar 'a ojo' y es la contribución central del proyecto."
 
-#### CASO C — Liquidez agresiva a corto plazo (muestra flexibilidad)
+> **Secuencia recomendada:** ejecutar Caso 1, luego Caso 2, y comparar los dos Z* en voz alta. El contraste $15,4M vs $24,8M es el momento clave de la demo.
 
-**Cuerpo:**
-```json
-{
-  "liquidez_reglas": [ { "hasta_dias": 90, "min_frac": 0.50 } ],
-  "concentracion_plazo_max": 0.40
-}
-```
+---
 
-**Resultado esperado:** `Z* = 13.282.012 COP`. El modelo mete 50 % en plazos ≤90 días:
+### PESTAÑA 2 — "Simulación de Liquidez"
 
-| Banco | Plazo | % |
+Esta pestaña hace un **barrido automático**: resuelve el modelo a varios niveles de exigencia de liquidez a corto plazo de una sola vez, y muestra cómo cae el rendimiento (el costo de oportunidad) a medida que se exige más liquidez. Usa el archivo `escenario_supuesto.csv`.
+
+> **Nota honesta para la exposición:** esta pestaña trabaja sobre un **escenario de tasas supuestas** (no los datos reales del optimizador), por eso sus cifras son distintas y menores. Es un ejemplo ilustrativo del *comportamiento* del costo de oportunidad. Vale la pena aclararlo si alguien pregunta.
+
+#### Caso 3 — Barrido de liquidez
+
+**Qué configurar en el panel "Parámetros":**
+- **Capital (COP):** `10000000`.
+- **Concentración máxima por banco (%):** `40`.
+- Pulsar **Simular liquidez**.
+
+**Resultado esperado:** una tabla/gráfico comparando escenarios de liquidez a corto plazo. Valores de referencia (aprox.):
+
+| Escenario | Rendimiento Z* | Costo de oportunidad |
 |---|---|---|
-| Bancolombia | 60 d | 10 % |
-| Bancolombia | 90 d | 30 % |
-| Lulo Bank | 90 d | 10 % |
-| Lulo Bank | 540 d | 10 % |
-| Davivienda | 720 d | 40 % |
+| Libre (sin exigencia) | ≈ $2.247.861 | $0 (referencia) |
+| 20 % a corto (≤180 d) | ≈ $1.919.256 | ≈ $328.605 |
+| (y así, subiendo la exigencia) | (baja) | (sube) |
 
-**Qué decir:** "Si la tesorería necesita la mitad del dinero disponible en 3 meses, el modelo reacomoda la cartera y el rendimiento baja a $13,3M. A mayor exigencia de liquidez, mayor costo de oportunidad: el modelo lo cuantifica."
+**Qué decir:** "A medida que exigimos más capital disponible a corto plazo, el rendimiento baja. Esa pérdida progresiva es el costo de oportunidad de la liquidez, cuantificado para cada nivel. Es la misma idea del Caso 2, pero mostrada como una escalera completa."
 
-#### CASO D — Validación de errores (robustez, opcional)
+---
 
-**Cuerpo:** `{ "liquidez": { "U_corto": 60 } }`
+### Resumen de la demo (3 ejecuciones bastan)
 
-**Resultado esperado:** `HTTP 422` con mensaje claro: *"'U_corto'=60 parece un PORCENTAJE. Use 0.6 para 60%."*
+1. **Optimizador — Caso 1** (base con liquidez): el modelo reparte entre plazos.
+2. **Optimizador — Caso 2** (sin liquidez): todo a 720 d → aparece el costo de oportunidad de $9,43M.
+3. **Simulación de Liquidez — Caso 3** (barrido): el costo de oportunidad como escalera.
 
-**Qué decir:** "La API valida las entradas: si el usuario confunde porcentaje con fracción, recibe un mensaje accionable en vez de un error técnico."
-
-### 1.4 Secuencia recomendada para la demo
-
-Caso A → Caso B (contraste del costo de oportunidad) → Caso C (flexibilidad). Con esos tres queda demostrada la tesis del proyecto. El Caso D solo si sobra tiempo.
+Con eso queda demostrado que la app funciona y que el modelo responde a la necesidad de liquidez.
 
 ---
 
 ## Parte 2 — Guion por diapositiva (lo esencial a decir)
 
-Objetivo: 20 minutos, 15 slides (~1,3 min cada una). Sugerencia de reparto al final.
+Objetivo: 20 minutos, 15 slides (~1,3 min cada una). Reparto sugerido al final.
 
 ### Slide 1 — Portada
-Presentar el proyecto, los tres autores y el curso. Una frase: "Vamos a mostrar cómo decidir, de forma óptima, en qué CDT invertir un capital para maximizar el rendimiento respetando necesidades reales de liquidez."
+Presentar el proyecto, los tres autores y el curso. Frase de apertura: "Vamos a mostrar cómo decidir, de forma óptima, en qué CDT invertir un capital para maximizar el rendimiento respetando necesidades reales de liquidez."
 
 ### Slide 2 — ¿Cómo invertir? (planteamiento)
-Plantear el problema: hay 5 bancos, 7 plazos y 3 tramos → 105 combinaciones (90 utilizables). Hacerlo "a ojo" es subóptimo porque las decisiones interactúan. Aquí engancha el problema.
+Plantear el problema: 5 bancos × 7 plazos × 3 tramos = 105 combinaciones (90 utilizables). Hacerlo "a ojo" es subóptimo porque las decisiones interactúan. Aquí engancha el problema.
 
 ### Slide 3 — Por qué importa
 Contexto del CDT colombiano: renta fija con tasa pactada, protegido por Fogafín, instrumento típico de tesorería. Las tasas cambian por banco y plazo, de ahí la necesidad de optimizar.
 
 ### Slide 4 — Metodología: decidir, fijar, interpretar
-Explicar la estrategia en 3 pasos: (1) el MILP decide la asignación óptima; (2) se fijan las variables binarias; (3) sobre el LP restringido resultante se hace el análisis dual. **Punto clave:** la dualidad fuerte solo vale para un LP, no para un MILP; por eso se separa.
+La estrategia en 3 pasos: (1) el MILP decide la asignación óptima; (2) se fijan las binarias; (3) sobre el LP restringido se hace el análisis dual. **Clave:** la dualidad fuerte solo vale para un LP, no para un MILP; por eso se separa.
 
 ### Slide 5 — Maximizar el rendimiento efectivo
-La función objetivo. **Lo más importante:** por qué se usa `f_ijk = (1+r)^(j/360) − 1` y no la tasa anual plana. Si usáramos la tasa anual, valoraríamos igual un CDT de 30 días y uno de 720 → decisión sesgada. `f_ijk` ajusta la tasa al horizonte real. *(Pregunta probable del jurado; dominarla.)*
+La función objetivo. **Lo más importante:** por qué se usa `f_ijk = (1+r)^(j/360) − 1` y no la tasa anual plana. Con la tasa plana valoraríamos igual un CDT de 30 días y uno de 720 → decisión sesgada. `f_ijk` ajusta la tasa al horizonte real. *(Pregunta probable del jurado.)*
 
 ### Slide 6 — Diez familias de restricciones
-Repaso rápido de las 10 familias. No leerlas todas; destacar que las **familias 9 (liquidez por fecha) y 10 (concentración por plazo)** son el aporte propio del equipo, incorporado tras la retroalimentación de la profesora.
+Repaso rápido. No leerlas todas; destacar que las **familias 9 (liquidez por fecha) y 10 (concentración por plazo)** son el aporte propio del equipo, tras la retroalimentación de la profesora.
 
 ### Slide 7 — Liquidez por fecha + concentración por plazo
-Explicar el aporte con palabras simples: "La tesorería puede necesitar dinero disponible en una fecha (ej. a 6 meses) sin amarrar todo al mismo plazo." La liquidez por fecha exige que una fracción venza antes de un umbral; la concentración por plazo evita poner todo en un solo horizonte.
+Explicar el aporte en simple: "La tesorería puede necesitar dinero disponible en una fecha (ej. a 6 meses) sin amarrar todo al mismo plazo." La liquidez por fecha exige que una fracción venza antes de un umbral; la concentración por plazo evita poner todo en un solo horizonte.
 
 ### Slide 8 — Herramientas y datos
-Stack: Python, PuLP/CBC, pandas/NumPy, FastAPI. **Énfasis en datos reales:** los 5 bancos con nombre, tasas de la SFC y tarifarios (corte oct–nov 2026), 90 combinaciones reales y 15 excluidas por no ofrecerse. "Cero invención de datos."
+Stack: Python, PuLP/CBC, pandas/NumPy, FastAPI. **Énfasis en datos reales:** los 5 bancos con nombre, tasas de la SFC y tarifarios (corte oct–nov 2026), 90 combinaciones reales y 15 excluidas. "Cero invención de datos."
 
-### Slide 9 — Resultado: asignación óptima  ← aquí puede ir la DEMO (Caso A)
-Mostrar Z* = $15.405.781, capital 100% colocado. El hallazgo: el capital se reparte entre 180, 360 y 720 días, cumpliendo las reglas de liquidez. **Momento ideal para abrir la demo y ejecutar el Caso A en vivo.**
+### Slide 9 — Resultado: asignación óptima  ← aquí va la DEMO (Optimizador, Caso 1)
+Mostrar Z* = $15.405.781, 100% colocado, reparto entre tres plazos. **Momento ideal para cambiar a la interfaz web y ejecutar el Caso 1 en vivo.**
 
-### Slide 10 — Costo de oportunidad de la liquidez  ← DEMO (Caso B)
-El resultado más vendible. Sin liquidez: $24,8M (todo a 720 d). Con liquidez: $15,4M. La diferencia **$9.426.250** es lo que "cuesta" mantener disponibilidad. **Ejecutar el Caso B en vivo para mostrar el contraste.**
+### Slide 10 — Costo de oportunidad de la liquidez  ← DEMO (Optimizador, Caso 2)
+El resultado más vendible. Sin liquidez: $24,8M. Con liquidez: $15,4M. Diferencia **$9.426.250**. **Ejecutar el Caso 2 en vivo y comparar los dos Z* en pantalla.** Si hay tiempo, mostrar la pestaña de Simulación de Liquidez (Caso 3).
 
 ### Slide 11 — Análisis de sensibilidad
-Precios sombra: λ* = 0,1201 (valor marginal del capital). Las restricciones que "mandan" son la liquidez a 180 días (−0,0665) y el tope del plazo de 720 días (+0,1347). Mencionar que la holgura complementaria se verificó: (x*)ᵀs* = 0.
+Precios sombra: λ* = 0,1201 (valor marginal del capital). Restricciones activas: liquidez a 180 días (−0,0665) y tope del plazo de 720 días (+0,1347). Holgura complementaria verificada: (x*)ᵀs* = 0.
 
 ### Slide 12 — Validación rigurosa, limitación honesta
-Holgura complementaria verificada (coherencia primal-dual). **Honestidad académica:** con las nuevas restricciones el LP restringido resultó degenerado, así que los precios sombra pueden no ser únicos y se interpretan con prudencia. Mostrar esto suma puntos: demuestra rigor.
+Holgura complementaria verificada (coherencia primal-dual). **Honestidad académica:** con las nuevas restricciones el LP restringido resultó degenerado, así que los precios sombra pueden no ser únicos y se interpretan con prudencia. Mostrar esto suma: demuestra rigor.
 
 ### Slide 13 — Contribuciones
-Las 5 contribuciones: decisión reproducible, retorno comparable (f_ijk), liquidez explícita, control de concentración, lectura económica vía dualidad. Conectar cada una con lo mostrado.
+Las 5 contribuciones: decisión reproducible, retorno comparable (f_ijk), liquidez explícita, control de concentración, lectura económica vía dualidad.
 
 ### Slide 14 — Aprendizajes y trabajo futuro
-Aprendizajes del curso aplicados (modelar la tasa al horizonte, separar decisión e interpretación, dualidad). Trabajo futuro: reinversión, incertidumbre en tasas, más escenarios de liquidez.
+Aprendizajes del curso aplicados. Trabajo futuro: reinversión, incertidumbre en tasas, más escenarios de liquidez.
 
 ### Slide 15 — Cierre
 Agradecer y abrir preguntas. Si hubo demo, cerrarla aquí.
@@ -155,12 +154,12 @@ Agradecer y abrir preguntas. Si hubo demo, cerrarla aquí.
 ### Sugerencia de reparto (3 expositores, ~6-7 min c/u)
 - **Expositor 1 — Planteamiento:** slides 1, 2, 3, 4.
 - **Expositor 2 — Modelo y método:** slides 5, 6, 7, 8.
-- **Expositor 3 — Resultados y cierre:** slides 9, 10, 11, 12, 13, 14, 15 (lleva la demo).
+- **Expositor 3 — Resultados y cierre:** slides 9, 10, 11, 12, 13, 14, 15 (lleva la demo en la interfaz).
 
-> Ajusten el reparto a quién domina cada tema. Lo importante: que quien exponga las slides 5 y 10 sepa defender `f_ijk` y el costo de oportunidad, que son las preguntas más probables.
+> Lo importante: que quien exponga las slides 5 y 10 sepa defender `f_ijk` y el costo de oportunidad, que son las preguntas más probables.
 
 ### Preguntas probables del jurado (prepararlas)
 1. **¿Por qué `f_ijk` y no la tasa anual?** → Para comparar plazos distintos; la tasa plana sesga hacia plazos cortos.
 2. **¿Por qué el análisis dual es sobre el LP y no el MILP?** → La dualidad fuerte solo está garantizada para problemas lineales; las binarias rompen la convexidad.
-3. **¿Los datos son reales?** → Sí, tasas de la SFC y tarifarios por plazo, verificadas. Lo único no desagregado por el mercado es el tramo de monto (prima = 0, documentado).
+3. **¿Los datos son reales?** → Sí, tasas de la SFC y tarifarios por plazo, verificadas. Lo único no desagregado por el mercado es el tramo de monto (prima = 0, documentado). *(La pestaña de Simulación de Liquidez usa un escenario supuesto; aclararlo si preguntan.)*
 4. **¿Qué significa el precio sombra negativo de liquidez?** → Que exigir liquidez a corto plazo resta rendimiento; es el costo marginal de esa exigencia.
